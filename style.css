@@ -1,0 +1,35 @@
+html, body {
+  margin: 0; padding: 0;
+  background: #111;
+  color: #ddd;
+  font-family: "MS Gothic", "Hiragino Kaku Gothic Pro", monospace;
+  height: 100%;
+}
+#wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  gap: 10px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+#game {
+  background: #000;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 3px solid #445;
+  border-radius: 4px;
+  max-width: 100%;
+  height: auto;
+  box-shadow: 0 0 24px rgba(0,0,0,0.8);
+  touch-action: none;
+}
+#help {
+  font-size: 13px;
+  color: #889;
+  text-align: center;
+  max-width: 640px;
+  line-height: 1.6;
+}

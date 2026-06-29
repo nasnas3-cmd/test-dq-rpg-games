@@ -1,0 +1,10 @@
+# スクラッチ/作業用テストスクリプト
+__*.mjs
+__*.js
+_test.mjs
+mtest.mjs
+tiledump.mjs
+vtest.mjs
+warpcheck.mjs
+*.log
+.DS_Store

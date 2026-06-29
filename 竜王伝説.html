@@ -1,0 +1,4714 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>竜王伝説</title>
+  <style>
+html, body {
+  margin: 0; padding: 0;
+  background: #111;
+  color: #ddd;
+  font-family: "MS Gothic", "Hiragino Kaku Gothic Pro", monospace;
+  height: 100%;
+}
+#wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  gap: 10px;
+  padding: 12px;
+  box-sizing: border-box;
+}
+#game {
+  background: #000;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 3px solid #445;
+  border-radius: 4px;
+  max-width: 100%;
+  height: auto;
+  box-shadow: 0 0 24px rgba(0,0,0,0.8);
+  touch-action: none;
+}
+#help {
+  font-size: 13px;
+  color: #889;
+  text-align: center;
+  max-width: 640px;
+  line-height: 1.6;
+}
+
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="640" height="480"></canvas>
+    <div id="help">
+      移動: 方向キー / WASD　決定: Enter / Space / Z　キャンセル: Esc / X　メニュー: M / Shift　BGM: B　タイトルで E:書き出し / I:読み込み　（クリック/タップ操作可）
+    </div>
+  </div>
+  <script>
+(() => {
+  // src/core/engine.js
+  var Engine = class {
+    constructor(update, render) {
+      this.update = update;
+      this.render = render;
+      this.frame = 0;
+      this.last = 0;
+      this.acc = 0;
+      this.step = 1e3 / 60;
+      this.running = false;
+      this._loop = this._loop.bind(this);
+    }
+    start() {
+      this.running = true;
+      this.last = performance.now();
+      requestAnimationFrame(this._loop);
+    }
+    _loop(now) {
+      if (!this.running) return;
+      let delta = now - this.last;
+      this.last = now;
+      if (delta > 100) delta = 100;
+      this.acc += delta;
+      let steps = 0;
+      while (this.acc >= this.step && steps < 5) {
+        this.update(this.step, this.frame);
+        this.frame++;
+        this.acc -= this.step;
+        steps++;
+      }
+      this.render();
+      requestAnimationFrame(this._loop);
+    }
+  };
+
+  // src/core/stateMachine.js
+  var STATE = {
+    TITLE: "TITLE",
+    NAME: "NAME",
+    FIELD: "FIELD",
+    BATTLE: "BATTLE",
+    MENU: "MENU",
+    SHOP: "SHOP",
+    EVENT: "EVENT",
+    // メッセージ表示中（移動不可）
+    GAMEOVER: "GAMEOVER",
+    ENDING: "ENDING"
+  };
+  var StateMachine = class {
+    constructor(initial) {
+      this.state = initial;
+      this.prev = null;
+    }
+    set(next) {
+      this.prev = this.state;
+      this.state = next;
+    }
+    is(s) {
+      return this.state === s;
+    }
+  };
+
+  // src/core/audio.js
+  var NOTE_RE = /^([A-G])(#|b)?(-?\d)$/;
+  var SEMI = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  function noteToFreq(n) {
+    if (!n || n === "R") return 0;
+    const m = NOTE_RE.exec(n);
+    if (!m) return 0;
+    let semi = SEMI[m[1]];
+    if (m[2] === "#") semi += 1;
+    else if (m[2] === "b") semi -= 1;
+    const oct = parseInt(m[3], 10);
+    const midi = (oct + 1) * 12 + semi;
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+  var TRACKS = {
+    // 序曲: 荘厳で勇壮なファンファーレ調。上行→頂点(E5/F5)→威厳ある下行。
+    // 長尺をA→A'で構成し、和声を II-V-I・サブドミナント変化させ感動を作る。
+    title: {
+      tempo: 92,
+      swing: 0,
+      // A: 呼びかけの主題（C基調・上行して輝く）
+      mel: [
+        { n: "C4", d: 0.5, g: 1.15 },
+        { n: "E4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "C5", d: 1.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "E4", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "F4", d: 0.5, g: 1.1 },
+        { n: "A4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "D5", d: 1.5 },
+        { n: "C5", d: 0.5 },
+        { n: "E5", d: 1.5, g: 1.2 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 2 },
+        // A': 応答の主題（より高く昇りつめ堂々と帰結）
+        { n: "E4", d: 0.5, g: 1.1 },
+        { n: "G4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "E5", d: 1.5 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "D5", d: 0.5, g: 1.1 },
+        { n: "F5", d: 0.5 },
+        { n: "E5", d: 1 },
+        { n: "D5", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "C5", d: 1, g: 1.15 },
+        { n: "B4", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 2 }
+      ],
+      // メロの3度下を中心にしたハモリ（要所で6度に開く）
+      harm: [
+        { n: "E3", d: 0.5 },
+        { n: "G3", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "E4", d: 1.5 },
+        { n: "G4", d: 0.5 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "C4", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "A3", d: 0.5 },
+        { n: "C4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "F4", d: 1.5 },
+        { n: "E4", d: 0.5 },
+        { n: "G4", d: 1.5 },
+        { n: "F4", d: 0.5 },
+        { n: "E4", d: 2 },
+        { n: "C4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "G4", d: 1.5 },
+        { n: "F4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "C4", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "E4", d: 2 }
+      ],
+      bass: [
+        { n: "C2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "E2", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "A2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "E2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "A2", d: 1 },
+        { n: "E2", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C2", d: 1 }
+      ]
+    },
+    // フィールド: 冒険の高揚。軽快なマーチを長尺化し、A(出発)→A'(高揚)で頂点(G5)へ。
+    field: {
+      tempo: 128,
+      mel: [
+        // A: 旅立ちの足取り（G基調・弾む）
+        { n: "G4", d: 0.5, g: 1.1 },
+        { n: "A4", d: 0.5 },
+        { n: "B4", d: 1 },
+        { n: "D5", d: 1 },
+        { n: "B4", d: 0.5 },
+        { n: "G4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "R", d: 1 },
+        { n: "E4", d: 0.5 },
+        { n: "G4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 0.5 },
+        { n: "G4", d: 0.5 },
+        { n: "G4", d: 1.5 },
+        { n: "D4", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "B4", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "D5", d: 1.5 },
+        { n: "G4", d: 0.5 },
+        { n: "E5", d: 1, g: 1.15 },
+        { n: "D5", d: 1 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "D4", d: 0.5 },
+        { n: "F#4", d: 0.5 },
+        { n: "G4", d: 2 },
+        // A': 高揚（頂点G5へ駆け上がる）
+        { n: "D5", d: 0.5, g: 1.1 },
+        { n: "E5", d: 0.5 },
+        { n: "G5", d: 1, g: 1.2 },
+        { n: "E5", d: 1 },
+        { n: "D5", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "R", d: 1 },
+        { n: "A4", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "F5", d: 1 },
+        { n: "E5", d: 1 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 1.5 },
+        { n: "G4", d: 0.5 },
+        { n: "E5", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "C5", d: 1.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G4", d: 1, g: 1.1 },
+        { n: "F#4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "F#4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "D5", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "G4", d: 2 }
+      ],
+      // メロの3度下基調、軽い対旋律
+      harm: [
+        { n: "B3", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "D4", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "G4", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "F#4", d: 1 },
+        { n: "R", d: 1 },
+        { n: "C4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "F#4", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "B3", d: 2 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "F#4", d: 1 },
+        { n: "G4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "B4", d: 2 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "F#4", d: 1 },
+        { n: "A3", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "B3", d: 2 },
+        { n: "B4", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "E5", d: 1 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 0.5 },
+        { n: "G4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "R", d: 1 },
+        { n: "F4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G4", d: 2 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "F#4", d: 0.5 },
+        { n: "G4", d: 0.5 },
+        { n: "A4", d: 2 },
+        { n: "B3", d: 1 },
+        { n: "A3", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "A3", d: 1 },
+        { n: "B3", d: 1 },
+        { n: "G4", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "B3", d: 2 }
+      ],
+      bass: [
+        { n: "G2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "E2", d: 1 },
+        { n: "B2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "B2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "A2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "F#2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "A2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D2", d: 1 }
+      ],
+      drums: [
+        { type: "kick", d: 1 },
+        { type: "hat", d: 1 },
+        { type: "snare", d: 1 },
+        { type: "hat", d: 1 }
+      ]
+    },
+    // 町: 明るく牧歌的（ゆったり）。安らぎの3度ハモリを添える。
+    town: {
+      tempo: 100,
+      mel: [
+        { n: "E4", d: 1 },
+        { n: "G4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 2 },
+        { n: "F4", d: 1 },
+        { n: "A4", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "C4", d: 2 }
+      ],
+      harm: [
+        { n: "C4", d: 1 },
+        { n: "E4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "B3", d: 2 },
+        { n: "A3", d: 1 },
+        { n: "C4", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "E4", d: 2 }
+      ],
+      bass: [
+        { n: "C3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D3", d: 1 },
+        { n: "G2", d: 2 },
+        { n: "F2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C3", d: 2 }
+      ],
+      arp: [
+        { n: "C5", d: 0.5 },
+        { n: "E5", d: 0.5 }
+      ]
+    },
+    // 王の間: 気品と哀愁。緩やかに息の長い旋律を伸ばし、6度下のハモリで荘厳に。
+    // サブドミナントマイナー(Ab色)を匂わせる哀愁の和声進行。
+    castle: {
+      tempo: 80,
+      mel: [
+        { n: "C5", d: 1.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "C5", d: 1.5 },
+        { n: "D5", d: 0.5 },
+        { n: "E5", d: 1.5, g: 1.1 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "G4", d: 2 },
+        // A': 哀愁を帯びた高みへ、Ab(サブドミナントマイナー色)を経て
+        { n: "G5", d: 1.5, g: 1.15 },
+        { n: "F5", d: 0.5 },
+        { n: "E5", d: 1 },
+        { n: "D5", d: 1 },
+        { n: "C5", d: 1.5 },
+        { n: "B4", d: 0.5 },
+        { n: "Ab4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "D5", d: 1.5 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "C5", d: 2 },
+        { n: "B4", d: 1 },
+        { n: "C5", d: 1 }
+      ],
+      // 6度下を主としたハモリ（哀感を強める）
+      harm: [
+        { n: "E4", d: 1.5 },
+        { n: "D4", d: 0.5 },
+        { n: "C4", d: 1 },
+        { n: "B3", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "E4", d: 1.5 },
+        { n: "F4", d: 0.5 },
+        { n: "G4", d: 1.5 },
+        { n: "F4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "B3", d: 1 },
+        { n: "B3", d: 2 },
+        { n: "B4", d: 1.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1.5 },
+        { n: "D4", d: 0.5 },
+        { n: "C4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "F4", d: 1.5 },
+        { n: "E4", d: 0.5 },
+        { n: "D4", d: 1 },
+        { n: "B3", d: 1 },
+        { n: "E4", d: 2 },
+        { n: "D4", d: 1 },
+        { n: "E4", d: 1 }
+      ],
+      bass: [
+        { n: "C3", d: 2 },
+        { n: "G2", d: 2 },
+        { n: "A2", d: 1 },
+        { n: "E2", d: 1 },
+        { n: "F2", d: 2 },
+        { n: "C3", d: 2 },
+        { n: "G2", d: 1 },
+        { n: "D3", d: 1 },
+        { n: "G2", d: 2 },
+        { n: "G2", d: 2 },
+        { n: "C3", d: 2 },
+        { n: "A2", d: 2 },
+        { n: "F2", d: 1 },
+        { n: "Ab2", d: 1 },
+        { n: "D2", d: 2 },
+        { n: "G2", d: 1 },
+        { n: "B2", d: 1 },
+        { n: "C3", d: 2 },
+        { n: "G2", d: 2 },
+        { n: "C3", d: 2 }
+      ]
+    },
+    // 洞窟: 孤独と不安。間(休符)を活かし、低く彷徨う短調。半音の擦れで不穏に。
+    // 薄い対旋律ハモリで「忍び寄る何か」の気配を出す。
+    cave: {
+      tempo: 72,
+      mel: [
+        { n: "A4", d: 1 },
+        { n: "R", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "G#4", d: 1.5 },
+        { n: "A4", d: 0.5 },
+        { n: "E4", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "F4", d: 1 },
+        { n: "R", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G#4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 2 },
+        { n: "D4", d: 1 },
+        { n: "E4", d: 1 },
+        // A': さらに沈み込み、頂点で不安が極まる
+        { n: "A4", d: 1 },
+        { n: "R", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "D5", d: 1 },
+        { n: "C5", d: 1.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "F4", d: 1 },
+        { n: "G#4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "C5", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "A4", d: 2 }
+      ],
+      // 5度/3度を彷徨う薄い対旋律
+      harm: [
+        { n: "E4", d: 1 },
+        { n: "R", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "E4", d: 1.5 },
+        { n: "C4", d: 0.5 },
+        { n: "B3", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "C4", d: 1 },
+        { n: "R", d: 0.5 },
+        { n: "C4", d: 0.5 },
+        { n: "B3", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "B3", d: 2 },
+        { n: "A3", d: 1 },
+        { n: "B3", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "R", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1.5 },
+        { n: "D4", d: 0.5 },
+        { n: "C4", d: 1.5 },
+        { n: "R", d: 0.5 },
+        { n: "C4", d: 1 },
+        { n: "B3", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "C4", d: 2 }
+      ],
+      bass: [
+        { n: "A1", d: 2 },
+        { n: "A1", d: 1 },
+        { n: "E2", d: 1 },
+        { n: "F1", d: 2 },
+        { n: "E2", d: 1 },
+        { n: "B1", d: 1 },
+        { n: "D2", d: 2 },
+        { n: "F2", d: 2 },
+        { n: "E2", d: 2 },
+        { n: "A1", d: 2 },
+        { n: "A1", d: 2 },
+        { n: "F1", d: 1 },
+        { n: "G1", d: 1 },
+        { n: "A1", d: 2 },
+        { n: "E2", d: 2 },
+        { n: "F1", d: 1 },
+        { n: "E2", d: 1 },
+        { n: "A1", d: 2 },
+        { n: "E2", d: 2 },
+        { n: "A1", d: 2 }
+      ]
+    },
+    // 通常戦闘: 緊迫したアップテンポ（短調・疾走感）。薄いハモリで攻撃性を増幅。
+    battle: {
+      tempo: 152,
+      mel: [
+        { n: "A4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G#4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "E5", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "D5", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "F5", d: 0.5 },
+        { n: "E5", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 1 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G#4", d: 0.5 },
+        { n: "A4", d: 2 }
+      ],
+      harm: [
+        { n: "E4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G#4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "C5", d: 0.5 },
+        { n: "B4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G#4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "G#4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "F4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G#4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "D4", d: 1 },
+        { n: "E4", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "C4", d: 0.5 },
+        { n: "B3", d: 0.5 },
+        { n: "A3", d: 2 }
+      ],
+      bass: [
+        { n: "A2", d: 0.5 },
+        { n: "A2", d: 0.5 },
+        { n: "A2", d: 0.5 },
+        { n: "A2", d: 0.5 },
+        { n: "E2", d: 0.5 },
+        { n: "E2", d: 0.5 },
+        { n: "E2", d: 0.5 },
+        { n: "E2", d: 0.5 },
+        { n: "F2", d: 0.5 },
+        { n: "F2", d: 0.5 },
+        { n: "F2", d: 0.5 },
+        { n: "F2", d: 0.5 },
+        { n: "E2", d: 0.5 },
+        { n: "E2", d: 0.5 },
+        { n: "E2", d: 0.5 },
+        { n: "E2", d: 0.5 }
+      ],
+      drums: [
+        { type: "kick", d: 0.5 },
+        { type: "hat", d: 0.5 },
+        { type: "snare", d: 0.5 },
+        { type: "hat", d: 0.5 }
+      ]
+    },
+    // 竜王戦: 荘厳で威圧的（重く不気味）。短3度を行き来する不気味なハモリ(薄め)。
+    boss: {
+      tempo: 118,
+      mel: [
+        { n: "D4", d: 1 },
+        { n: "D4", d: 0.5 },
+        { n: "Eb4", d: 0.5 },
+        { n: "D4", d: 1 },
+        { n: "A3", d: 1 },
+        { n: "Bb3", d: 1 },
+        { n: "A3", d: 1 },
+        { n: "G3", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "F4", d: 0.5 },
+        { n: "Eb4", d: 0.5 },
+        { n: "D4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "Bb3", d: 1 },
+        { n: "A3", d: 2 },
+        { n: "D4", d: 1 },
+        { n: "A3", d: 1 },
+        // A-prime: 威圧を強めて頂点へ
+        { n: "D5", d: 1, g: 1.15 },
+        { n: "C5", d: 0.5 },
+        { n: "Bb4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "Eb4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "Bb4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "Eb4", d: 1 },
+        { n: "D4", d: 2 },
+        { n: "A3", d: 1 },
+        { n: "D4", d: 1 }
+      ],
+      harm: [
+        { n: "A3", d: 1 },
+        { n: "A3", d: 0.5 },
+        { n: "Bb3", d: 0.5 },
+        { n: "A3", d: 1 },
+        { n: "F3", d: 1 },
+        { n: "G3", d: 1 },
+        { n: "F3", d: 1 },
+        { n: "Eb3", d: 1 },
+        { n: "A3", d: 1 },
+        { n: "Bb3", d: 0.5 },
+        { n: "A3", d: 0.5 },
+        { n: "A3", d: 1 },
+        { n: "A3", d: 1 },
+        { n: "F3", d: 1 },
+        { n: "F3", d: 2 },
+        { n: "A3", d: 1 },
+        { n: "F3", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "Eb4", d: 0.5 },
+        { n: "D4", d: 0.5 },
+        { n: "C4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "Eb4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "Bb3", d: 1 },
+        { n: "A3", d: 1 },
+        { n: "G4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "Eb4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "C4", d: 1 },
+        { n: "A3", d: 2 },
+        { n: "F3", d: 1 },
+        { n: "A3", d: 1 }
+      ],
+      bass: [
+        { n: "D1", d: 0.5 },
+        { n: "D1", d: 0.5 },
+        { n: "D1", d: 1 },
+        { n: "A1", d: 1 },
+        { n: "D1", d: 1 },
+        { n: "Bb1", d: 0.5 },
+        { n: "Bb1", d: 0.5 },
+        { n: "Bb1", d: 1 },
+        { n: "G1", d: 1 },
+        { n: "D1", d: 1 },
+        { n: "F1", d: 0.5 },
+        { n: "F1", d: 0.5 },
+        { n: "F1", d: 1 },
+        { n: "C2", d: 1 },
+        { n: "Bb1", d: 1 },
+        { n: "A1", d: 1 },
+        { n: "A1", d: 1 },
+        { n: "D1", d: 1 },
+        { n: "A1", d: 1 },
+        { n: "D1", d: 0.5 },
+        { n: "D1", d: 0.5 },
+        { n: "D1", d: 1 },
+        { n: "F1", d: 1 },
+        { n: "D1", d: 1 },
+        { n: "Bb1", d: 0.5 },
+        { n: "Bb1", d: 0.5 },
+        { n: "Bb1", d: 1 },
+        { n: "Eb1", d: 1 },
+        { n: "D1", d: 1 },
+        { n: "G1", d: 0.5 },
+        { n: "G1", d: 0.5 },
+        { n: "C2", d: 1 },
+        { n: "F1", d: 1 },
+        { n: "Eb1", d: 1 },
+        { n: "D1", d: 1 },
+        { n: "A1", d: 1 },
+        { n: "D1", d: 1 },
+        { n: "A1", d: 1 }
+      ],
+      drums: [
+        { type: "kick", d: 1 },
+        { type: "kick", d: 1 },
+        { type: "snare", d: 1 },
+        { type: "kick", d: 1 }
+      ]
+    },
+    // エンディング: 感動と救済。長尺の凱旋歌をA->A-primeで頂点へ導き、温かな3度ハモリで包む。
+    ending: {
+      tempo: 88,
+      mel: [
+        { n: "C5", d: 1 },
+        { n: "G4", d: 0.5 },
+        { n: "A4", d: 0.5 },
+        { n: "C5", d: 1 },
+        { n: "E5", d: 1 },
+        { n: "D5", d: 1 },
+        { n: "C5", d: 1 },
+        { n: "G4", d: 1.5 },
+        { n: "A4", d: 0.5 },
+        { n: "F4", d: 1 },
+        { n: "A4", d: 0.5 },
+        { n: "C5", d: 0.5 },
+        { n: "F5", d: 1, g: 1.1 },
+        { n: "E5", d: 1 },
+        { n: "D5", d: 1 },
+        { n: "C5", d: 1 },
+        { n: "C5", d: 2 },
+        { n: "E5", d: 1 },
+        { n: "C5", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "E5", d: 1 },
+        { n: "G5", d: 1, g: 1.15 },
+        { n: "F5", d: 1 },
+        { n: "E5", d: 1 },
+        { n: "C5", d: 1.5 },
+        { n: "D5", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "C5", d: 0.5 },
+        { n: "D5", d: 0.5 },
+        { n: "E5", d: 1 },
+        { n: "D5", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "B4", d: 1 },
+        { n: "C5", d: 2 }
+      ],
+      harm: [
+        { n: "E4", d: 1 },
+        { n: "E4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "E4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 1.5 },
+        { n: "F4", d: 0.5 },
+        { n: "A3", d: 1 },
+        { n: "C4", d: 0.5 },
+        { n: "E4", d: 0.5 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "E4", d: 2 },
+        { n: "G4", d: 1 },
+        { n: "E4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "E5", d: 1 },
+        { n: "A4", d: 1 },
+        { n: "G4", d: 1 },
+        { n: "E4", d: 1.5 },
+        { n: "F4", d: 0.5 },
+        { n: "C4", d: 1 },
+        { n: "E4", d: 0.5 },
+        { n: "F4", d: 0.5 },
+        { n: "G4", d: 1 },
+        { n: "F4", d: 1 },
+        { n: "E4", d: 1 },
+        { n: "D4", d: 1 },
+        { n: "E4", d: 2 }
+      ],
+      bass: [
+        { n: "C3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "E3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D3", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "A2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "D3", d: 1 },
+        { n: "C3", d: 2 },
+        { n: "A2", d: 1 },
+        { n: "E3", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "A2", d: 1 },
+        { n: "D3", d: 1 },
+        { n: "F2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C3", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "G2", d: 1 },
+        { n: "C3", d: 2 }
+      ]
+    }
+  };
+  var AudioEngine = class {
+    constructor() {
+      this.ctx = null;
+      this.master = null;
+      this.muted = false;
+      this.current = null;
+      this.pending = null;
+      this._timer = null;
+      this._voices = { mel: 0, harmony: 0, bass: 0, arp: 0, drums: 0 };
+      this._idx = { mel: 0, harmony: 0, bass: 0, arp: 0, drums: 0 };
+      this._scheduleAhead = 0.2;
+      this._lookahead = 40;
+      try {
+        if (typeof localStorage !== "undefined" && localStorage.getItem("bgm_muted") === "1") {
+          this.muted = true;
+        }
+      } catch (e) {
+      }
+    }
+    _ensureCtx() {
+      if (this.ctx) return true;
+      const AC = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
+      if (!AC) return false;
+      try {
+        this.ctx = new AC();
+        this.master = this.ctx.createGain();
+        this.master.gain.value = this.muted ? 0 : 0.2;
+        this.master.connect(this.ctx.destination);
+        return true;
+      } catch (e) {
+        this.ctx = null;
+        return false;
+      }
+    }
+    // 初回ユーザー操作で呼ぶ。既に再生中(_timer稼働)なら頭出ししない（キー入力ごとの頭出しバグ防止）。
+    resume() {
+      if (!this._ensureCtx()) return;
+      if (this.ctx.state === "suspended") {
+        this.ctx.resume().catch(() => {
+        });
+      }
+      if (this._timer) return;
+      const want = this.pending || this.current;
+      if (want) {
+        this.pending = null;
+        this.current = null;
+        this._start(want);
+      }
+    }
+    isMuted() {
+      return this.muted;
+    }
+    setMuted(b) {
+      this.muted = !!b;
+      try {
+        if (typeof localStorage !== "undefined") localStorage.setItem("bgm_muted", this.muted ? "1" : "0");
+      } catch (e) {
+      }
+      if (this.master && this.ctx) {
+        const now = this.ctx.currentTime;
+        this.master.gain.cancelScheduledValues(now);
+        this.master.gain.setValueAtTime(this.master.gain.value, now);
+        this.master.gain.linearRampToValueAtTime(this.muted ? 0 : 0.2, now + 0.05);
+      }
+      return this.muted;
+    }
+    toggleMute() {
+      return this.setMuted(!this.muted);
+    }
+    play(trackId) {
+      if (!TRACKS[trackId]) return;
+      if (this.current === trackId) return;
+      if (!this.ctx || this.ctx.state !== "running") {
+        this.pending = trackId;
+        this.current = trackId;
+        return;
+      }
+      this._start(trackId);
+    }
+    _start(trackId) {
+      if (this.current === trackId && this._timer) return;
+      this.stop();
+      this.current = trackId;
+      const t0 = this.ctx.currentTime + 0.06;
+      this._voices = { mel: t0, harmony: t0, bass: t0, arp: t0, drums: t0 };
+      this._idx = { mel: 0, harmony: 0, bass: 0, arp: 0, drums: 0 };
+      this._scheduler();
+      this._timer = setInterval(() => this._scheduler(), this._lookahead);
+    }
+    stop() {
+      if (this._timer) {
+        clearInterval(this._timer);
+        this._timer = null;
+      }
+      this.current = null;
+    }
+    // 先読みスケジューラ: 各声部の次音符を scheduleAhead 秒先まで詰める。
+    _scheduler() {
+      if (!this.ctx || !this.current) return;
+      const track = TRACKS[this.current];
+      if (!track) return;
+      const spb = 60 / track.tempo;
+      const until = this.ctx.currentTime + this._scheduleAhead;
+      this._scheduleVoice("mel", track.mel, spb, until, "square", 0.16);
+      if (track.harm) this._scheduleVoice("harmony", track.harm, spb, until, "triangle", 0.1);
+      this._scheduleVoice("bass", track.bass, spb, until, "triangle", 0.26);
+      if (track.arp) this._scheduleVoice("arp", track.arp, spb, until, "square", 0.07);
+      if (track.drums) this._scheduleDrums(track.drums, spb, until);
+    }
+    _scheduleVoice(voice, notes, spb, until, wave, gain) {
+      if (!notes || !notes.length) return;
+      while (this._voices[voice] < until) {
+        const i = this._idx[voice] % notes.length;
+        const note = notes[i];
+        const dur = note.d * spb;
+        const start = this._voices[voice];
+        const freq = noteToFreq(note.n);
+        if (freq > 0) {
+          this._playTone(freq, start, dur, note.w || wave, (note.g || 1) * gain);
+        }
+        this._voices[voice] += dur;
+        this._idx[voice]++;
+      }
+    }
+    _scheduleDrums(notes, spb, until) {
+      while (this._voices.drums < until) {
+        const i = this._idx.drums % notes.length;
+        const note = notes[i];
+        const dur = note.d * spb;
+        const start = this._voices.drums;
+        this._playDrum(note.type, start);
+        this._voices.drums += dur;
+        this._idx.drums++;
+      }
+    }
+    // 1音をADSR風エンベロープで発音。アタック/リリースのフェードでクリックノイズ回避。
+    _playTone(freq, start, dur, wave, gain) {
+      const ctx = this.ctx;
+      let osc;
+      if (wave === "pulse") {
+        osc = ctx.createOscillator();
+        osc.type = "square";
+      } else {
+        osc = ctx.createOscillator();
+        osc.type = wave;
+      }
+      osc.frequency.setValueAtTime(freq, start);
+      const env = ctx.createGain();
+      const peak = gain;
+      const atk = 8e-3, rel = Math.min(0.08, dur * 0.4);
+      const sustain = Math.max(start + atk, start + dur - rel);
+      env.gain.setValueAtTime(1e-4, start);
+      env.gain.linearRampToValueAtTime(peak, start + atk);
+      env.gain.setValueAtTime(peak * 0.85, sustain);
+      env.gain.exponentialRampToValueAtTime(1e-4, start + dur);
+      osc.connect(env);
+      env.connect(this.master);
+      osc.start(start);
+      osc.stop(start + dur + 0.02);
+    }
+    // パーカッション: kick/snare/hat をノイズ＋エンベロープで簡易合成。
+    _playDrum(type, start) {
+      const ctx = this.ctx;
+      if (type === "kick") {
+        const osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(120, start);
+        osc.frequency.exponentialRampToValueAtTime(40, start + 0.12);
+        const env = ctx.createGain();
+        env.gain.setValueAtTime(1e-4, start);
+        env.gain.linearRampToValueAtTime(0.5, start + 5e-3);
+        env.gain.exponentialRampToValueAtTime(1e-4, start + 0.15);
+        osc.connect(env);
+        env.connect(this.master);
+        osc.start(start);
+        osc.stop(start + 0.16);
+      } else {
+        const dur = type === "snare" ? 0.14 : 0.04;
+        const peak = type === "snare" ? 0.28 : 0.12;
+        const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * dur), ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const hp = ctx.createBiquadFilter();
+        hp.type = "highpass";
+        hp.frequency.value = type === "snare" ? 1200 : 6e3;
+        const env = ctx.createGain();
+        env.gain.setValueAtTime(1e-4, start);
+        env.gain.linearRampToValueAtTime(peak, start + 3e-3);
+        env.gain.exponentialRampToValueAtTime(1e-4, start + dur);
+        src.connect(hp);
+        hp.connect(env);
+        env.connect(this.master);
+        src.start(start);
+        src.stop(start + dur + 0.02);
+      }
+    }
+  };
+  var BGM = new AudioEngine();
+
+  // src/core/input.js
+  var Input = class {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.held = {};
+      this.pressed = {};
+      this._queue = [];
+      this.pointer = null;
+      const map = {
+        ArrowUp: "up",
+        KeyW: "up",
+        ArrowDown: "down",
+        KeyS: "down",
+        ArrowLeft: "left",
+        KeyA: "left",
+        ArrowRight: "right",
+        KeyD: "right",
+        Enter: "confirm",
+        Space: "confirm",
+        KeyZ: "confirm",
+        Escape: "cancel",
+        KeyX: "cancel",
+        Backspace: "cancel",
+        KeyM: "menu",
+        ShiftLeft: "menu"
+      };
+      window.addEventListener("keydown", (e) => {
+        BGM.resume();
+        if (e.code === "KeyB") {
+          BGM.toggleMute();
+          e.preventDefault();
+          return;
+        }
+        const b = map[e.code];
+        if (b) {
+          if (!this.held[b]) {
+            this.pressed[b] = true;
+            this._queue.push(b);
+          }
+          this.held[b] = true;
+          e.preventDefault();
+        }
+      });
+      window.addEventListener("keyup", (e) => {
+        const b = map[e.code];
+        if (b) {
+          this.held[b] = false;
+          e.preventDefault();
+        }
+      });
+      const handleClick = (clientX, clientY) => {
+        BGM.resume();
+        const rect = canvas.getBoundingClientRect();
+        const sx = canvas.width / rect.width;
+        const sy = canvas.height / rect.height;
+        this.pointer = { x: (clientX - rect.left) * sx, y: (clientY - rect.top) * sy };
+      };
+      canvas.addEventListener("mousedown", (e) => {
+        handleClick(e.clientX, e.clientY);
+      });
+      canvas.addEventListener("touchstart", (e) => {
+        if (e.touches[0]) {
+          handleClick(e.touches[0].clientX, e.touches[0].clientY);
+          e.preventDefault();
+        }
+      }, { passive: false });
+    }
+    // フレーム消費後に呼ぶ
+    endFrame() {
+      this.pressed = {};
+      this._queue = [];
+      this.pointer = null;
+    }
+    // 状態遷移時に呼び、貯まったエッジ入力を破棄して決定キーの二重消費を防ぐ
+    flush() {
+      this._queue = [];
+      this.pressed = {};
+      this.pointer = null;
+    }
+    consume() {
+      const q = this._queue.slice();
+      return q;
+    }
+    isPressed(b) {
+      return !!this.pressed[b];
+    }
+    isHeld(b) {
+      return !!this.held[b];
+    }
+    takePointer() {
+      const p = this.pointer;
+      this.pointer = null;
+      return p;
+    }
+  };
+
+  // src/core/assets.js
+  var TILE_PATHS = {
+    grass: "assets/tiles/grass.png",
+    water: "assets/tiles/water.png",
+    mountain: "assets/tiles/mountain.png",
+    forest: "assets/tiles/forest.png",
+    wall: "assets/tiles/wall.png",
+    floor: "assets/tiles/floor.png",
+    stairsDown: "assets/tiles/stairs_down.png",
+    stairsUp: "assets/tiles/stairs_up.png",
+    door: "assets/tiles/door.png",
+    brick: "assets/tiles/brick.png",
+    road: "assets/tiles/road.png",
+    bridge: "assets/tiles/bridge.png",
+    swamp: "assets/tiles/swamp.png",
+    throne: "assets/tiles/throne.png",
+    chest: "assets/tiles/chest.png",
+    sign: "assets/tiles/sign.png"
+  };
+  var AssetManagerClass = class {
+    constructor() {
+      this.images = {};
+      this.loaded = {};
+    }
+    // 任意：PNGを事前ロード（存在しなくてもエラーにしない）
+    preload() {
+      return new Promise((resolve) => {
+        const keys = Object.keys(TILE_PATHS);
+        let remain = keys.length;
+        if (remain === 0) return resolve();
+        keys.forEach((k) => {
+          const img = new Image();
+          img.onload = () => {
+            this.images[k] = img;
+            this.loaded[k] = true;
+            if (--remain === 0) resolve();
+          };
+          img.onerror = () => {
+            this.loaded[k] = false;
+            if (--remain === 0) resolve();
+          };
+          img.src = TILE_PATHS[k];
+        });
+      });
+    }
+    hasImage(key) {
+      return !!this.images[key];
+    }
+  };
+  var AssetManager = new AssetManagerClass();
+
+  // src/core/gfx.js
+  function drawTile(ctx, kind, px, py, t) {
+    if (AssetManager.hasImage(kind)) {
+      ctx.drawImage(AssetManager.images[kind], px, py, t, t);
+      return;
+    }
+    switch (kind) {
+      case "grass":
+        base(ctx, px, py, t, "#3a7d3a");
+        dots(ctx, px, py, t, "#2f6a2f");
+        break;
+      case "road":
+        base(ctx, px, py, t, "#b89a5e");
+        break;
+      case "water":
+        base(ctx, px, py, t, "#2b6fd6");
+        waves(ctx, px, py, t);
+        break;
+      case "swamp":
+        base(ctx, px, py, t, "#5a6b3a");
+        dots(ctx, px, py, t, "#454f28");
+        break;
+      case "mountain":
+        base(ctx, px, py, t, "#7a6a52");
+        tri(ctx, px, py, t, "#5c4f3c");
+        break;
+      case "forest":
+        base(ctx, px, py, t, "#2f6a2f");
+        tree(ctx, px, py, t);
+        break;
+      case "wall":
+        base(ctx, px, py, t, "#555a66");
+        brickLines(ctx, px, py, t, "#3d414b");
+        break;
+      case "brick":
+        base(ctx, px, py, t, "#6b6f7a");
+        brickLines(ctx, px, py, t, "#54585f");
+        break;
+      case "floor":
+        base(ctx, px, py, t, "#8a8170");
+        grid(ctx, px, py, t, "#766e5e");
+        break;
+      case "bridge":
+        base(ctx, px, py, t, "#9a7b46");
+        plank(ctx, px, py, t);
+        break;
+      case "door":
+        base(ctx, px, py, t, "#6b6f7a");
+        door(ctx, px, py, t);
+        break;
+      case "stairsDown":
+        base(ctx, px, py, t, "#8a8170");
+        stairs(ctx, px, py, t, true);
+        break;
+      case "stairsUp":
+        base(ctx, px, py, t, "#8a8170");
+        stairs(ctx, px, py, t, false);
+        break;
+      case "throne":
+        base(ctx, px, py, t, "#8a8170");
+        throne(ctx, px, py, t);
+        break;
+      case "chest":
+        base(ctx, px, py, t, "#8a8170");
+        chest(ctx, px, py, t);
+        break;
+      case "sign":
+        base(ctx, px, py, t, "#3a7d3a");
+        sign(ctx, px, py, t);
+        break;
+      default:
+        base(ctx, px, py, t, "#222");
+    }
+  }
+  function base(ctx, x, y, t, c) {
+    ctx.fillStyle = c;
+    ctx.fillRect(x, y, t, t);
+  }
+  function dots(ctx, x, y, t, c) {
+    ctx.fillStyle = c;
+    const s = Math.max(2, t / 12);
+    ctx.fillRect(x + t * 0.2, y + t * 0.3, s, s);
+    ctx.fillRect(x + t * 0.6, y + t * 0.55, s, s);
+    ctx.fillRect(x + t * 0.4, y + t * 0.78, s, s);
+  }
+  function waves(ctx, x, y, t) {
+    ctx.strokeStyle = "#5b9bf0";
+    ctx.lineWidth = Math.max(1, t / 16);
+    ctx.beginPath();
+    for (let i = 0; i < 2; i++) {
+      const yy = y + t * (0.35 + i * 0.35);
+      ctx.moveTo(x + 2, yy);
+      ctx.quadraticCurveTo(x + t / 2, yy - t * 0.12, x + t - 2, yy);
+    }
+    ctx.stroke();
+  }
+  function tri(ctx, x, y, t, c) {
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(x + t * 0.5, y + t * 0.2);
+    ctx.lineTo(x + t * 0.85, y + t * 0.8);
+    ctx.lineTo(x + t * 0.15, y + t * 0.8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.moveTo(x + t * 0.5, y + t * 0.2);
+    ctx.lineTo(x + t * 0.62, y + t * 0.42);
+    ctx.lineTo(x + t * 0.38, y + t * 0.42);
+    ctx.closePath();
+    ctx.fill();
+  }
+  function tree(ctx, x, y, t) {
+    ctx.fillStyle = "#1f4d1f";
+    ctx.beginPath();
+    ctx.arc(x + t / 2, y + t * 0.45, t * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#6b4a23";
+    ctx.fillRect(x + t * 0.45, y + t * 0.55, t * 0.1, t * 0.3);
+  }
+  function brickLines(ctx, x, y, t, c) {
+    ctx.strokeStyle = c;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y + t / 2);
+    ctx.lineTo(x + t, y + t / 2);
+    ctx.moveTo(x + t / 2, y);
+    ctx.lineTo(x + t / 2, y + t / 2);
+    ctx.moveTo(x + t * 0.25, y + t / 2);
+    ctx.lineTo(x + t * 0.25, y + t);
+    ctx.moveTo(x + t * 0.75, y + t / 2);
+    ctx.lineTo(x + t * 0.75, y + t);
+    ctx.stroke();
+  }
+  function grid(ctx, x, y, t, c) {
+    ctx.strokeStyle = c;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, t - 1, t - 1);
+  }
+  function plank(ctx, x, y, t) {
+    ctx.strokeStyle = "#6b5430";
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(x, y + t * i / 4);
+      ctx.lineTo(x + t, y + t * i / 4);
+      ctx.stroke();
+    }
+  }
+  function door(ctx, x, y, t) {
+    ctx.fillStyle = "#7a5a2a";
+    ctx.fillRect(x + t * 0.2, y + t * 0.1, t * 0.6, t * 0.9);
+    ctx.fillStyle = "#d8c060";
+    ctx.fillRect(x + t * 0.66, y + t * 0.5, t * 0.08, t * 0.08);
+  }
+  function stairs(ctx, x, y, t, down) {
+    ctx.fillStyle = down ? "#33373f" : "#c9c3ad";
+    for (let i = 0; i < 4; i++) {
+      const w = t * (0.25 + i * 0.18);
+      ctx.fillRect(x + (t - w) / 2, y + t * (0.15 + i * 0.2), w, t * 0.12);
+    }
+  }
+  function throne(ctx, x, y, t) {
+    ctx.fillStyle = "#c9a227";
+    ctx.fillRect(x + t * 0.25, y + t * 0.2, t * 0.5, t * 0.6);
+    ctx.fillStyle = "#8a2be2";
+    ctx.fillRect(x + t * 0.32, y + t * 0.3, t * 0.36, t * 0.3);
+  }
+  function chest(ctx, x, y, t) {
+    ctx.fillStyle = "#8a5a20";
+    ctx.fillRect(x + t * 0.2, y + t * 0.35, t * 0.6, t * 0.45);
+    ctx.fillStyle = "#d8c060";
+    ctx.fillRect(x + t * 0.2, y + t * 0.45, t * 0.6, t * 0.08);
+  }
+  function sign(ctx, x, y, t) {
+    ctx.fillStyle = "#6b4a23";
+    ctx.fillRect(x + t * 0.44, y + t * 0.4, t * 0.12, t * 0.5);
+    ctx.fillStyle = "#c9a96a";
+    ctx.fillRect(x + t * 0.25, y + t * 0.2, t * 0.5, t * 0.3);
+  }
+  var SPRITE_COLORS = {
+    hero: { body: "#2e64c8", skin: "#f0c090", hair: "#5a3a1a", accent: "#e0d040" },
+    king: { body: "#a01010", skin: "#f0c090", hair: "#dddddd", accent: "#e0d040" },
+    princess: { body: "#d86aa8", skin: "#f0c090", hair: "#e0c040", accent: "#fff" },
+    soldier: { body: "#6a7a8a", skin: "#f0c090", hair: "#333", accent: "#bbb" },
+    priest: { body: "#e8e8e8", skin: "#f0c090", hair: "#888", accent: "#c9a227" },
+    townsman: { body: "#3a8a4a", skin: "#f0c090", hair: "#5a3a1a", accent: "#7a5a2a" },
+    elder: { body: "#8a7a5a", skin: "#f0c090", hair: "#ddd", accent: "#aaa" },
+    shop: { body: "#9a6a2a", skin: "#f0c090", hair: "#3a2a1a", accent: "#d8c060" },
+    bridge: { body: "#5a5a7a", skin: "#f0c090", hair: "#444", accent: "#888" }
+  };
+  function drawSprite(ctx, kind, dir, px, py, t) {
+    const c = SPRITE_COLORS[kind] || SPRITE_COLORS.townsman;
+    const u = t / 16;
+    const P = (cx, cy, w, h, col) => {
+      ctx.fillStyle = col;
+      ctx.fillRect(px + cx * u, py + cy * u, w * u, h * u);
+    };
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.beginPath();
+    ctx.ellipse(px + t / 2, py + t * 0.92, t * 0.32, t * 0.12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    P(5, 8, 6, 6, c.body);
+    P(5, 3, 6, 5, c.skin);
+    P(5, 2, 6, 2, c.hair);
+    P(5, 11, 6, 1, c.accent);
+    ctx.fillStyle = "#222";
+    if (dir === "down" || !dir) {
+      P(6, 5, 1, 1, "#222");
+      P(9, 5, 1, 1, "#222");
+    } else if (dir === "up") {
+      P(5, 4, 6, 1, c.hair);
+    } else if (dir === "left") {
+      P(6, 5, 1, 1, "#222");
+    } else if (dir === "right") {
+      P(9, 5, 1, 1, "#222");
+    }
+    P(5, 14, 2, 2, "#333");
+    P(9, 14, 2, 2, "#333");
+  }
+  function drawEnemy(ctx, color, cx, cy, size) {
+    const u = size / 16;
+    const P = (x, y, w, h, col) => {
+      ctx.fillStyle = col;
+      ctx.fillRect(cx - size / 2 + x * u, cy - size / 2 + y * u, w * u, h * u);
+    };
+    ctx.fillStyle = "rgba(0,0,0,0.3)";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + size * 0.46, size * 0.4, size * 0.1, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, size * 0.42, size * 0.42, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.22)";
+    ctx.beginPath();
+    ctx.ellipse(cx - size * 0.12, cy - size * 0.14, size * 0.16, size * 0.12, 0, 0, Math.PI * 2);
+    ctx.fill();
+    P(4.5, 6, 2, 2.5, "#fff");
+    P(9.5, 6, 2, 2.5, "#fff");
+    P(5, 7, 1, 1.5, "#111");
+    P(10, 7, 1, 1.5, "#111");
+    ctx.strokeStyle = "#111";
+    ctx.lineWidth = Math.max(1, u);
+    ctx.beginPath();
+    ctx.moveTo(cx - size * 0.12, cy + size * 0.16);
+    ctx.lineTo(cx + size * 0.12, cy + size * 0.16);
+    ctx.stroke();
+  }
+
+  // src/player/levelTable.js
+  var LEVELS = [];
+  (function build() {
+    let exp = 0;
+    for (let lv = 1; lv <= 30; lv++) {
+      if (lv === 1) exp = 0;
+      else {
+        const inc = Math.floor(7 * Math.pow(lv - 1, 1.85)) + (lv - 1) * 4;
+        exp += inc;
+      }
+      const maxHp = 18 + Math.floor((lv - 1) * 7.2) + Math.floor(Math.pow(lv, 1.4));
+      const maxMp = lv < 3 ? 0 : 4 + Math.floor((lv - 3) * 4);
+      const str = 4 + Math.floor((lv - 1) * 3.4);
+      const agi = 4 + Math.floor((lv - 1) * 2.6);
+      LEVELS.push({ lv, exp, maxHp, maxMp: Math.max(0, maxMp), str, agi });
+    }
+  })();
+  function levelForExp(totalExp) {
+    let lv = 1;
+    for (const e of LEVELS) {
+      if (totalExp >= e.exp) lv = e.lv;
+      else break;
+    }
+    return lv;
+  }
+  function statsForLevel(lv) {
+    return LEVELS[Math.min(lv, 30) - 1];
+  }
+  function expToNext(totalExp) {
+    const lv = levelForExp(totalExp);
+    if (lv >= 30) return 0;
+    return LEVELS[lv].exp - totalExp;
+  }
+
+  // src/player/spells.js
+  var SPELLS = {
+    firaLow: { id: "firaLow", name: "ヒノコ", kind: "attack", mp: 3, power: 14, variance: 4, learnLv: 3, battleOnly: true, desc: "小さな ほのおで こうげき" },
+    firaMid: { id: "firaMid", name: "ヒバシラ", kind: "attack", mp: 7, power: 34, variance: 8, learnLv: 9, battleOnly: true, desc: "大きな ほのおで こうげき" },
+    curaLow: { id: "curaLow", name: "イヤシ", kind: "heal", mp: 3, power: 32, variance: 6, learnLv: 4, battleOnly: false, desc: "HPを かいふくする" },
+    curaMid: { id: "curaMid", name: "イヤシナ", kind: "heal", mp: 7, power: 90, variance: 10, learnLv: 11, battleOnly: false, desc: "HPを 大きく かいふく" },
+    warp: { id: "warp", name: "マチカエシ", kind: "teleport", mp: 8, learnLv: 7, battleOnly: false, desc: "城下町へ もどる" },
+    exit: { id: "exit", name: "ダッシュ", kind: "escape", mp: 6, learnLv: 13, battleOnly: false, desc: "ダンジョンの 入口へ" }
+  };
+  function getSpell(id) {
+    return SPELLS[id];
+  }
+  var SPELL_LEARN = {
+    3: "firaLow",
+    4: "curaLow",
+    7: "warp",
+    9: "firaMid",
+    11: "curaMid",
+    13: "exit"
+  };
+
+  // src/data/items.js
+  var ITEMS = {
+    // --- 武器 (str加算) ---
+    branch: { id: "branch", name: "こんぼう", type: "weapon", atk: 4, price: 30, desc: "ちからを 4 あげる" },
+    copper: { id: "copper", name: "どうのつるぎ", type: "weapon", atk: 10, price: 220, desc: "ちからを 10 あげる" },
+    iron: { id: "iron", name: "はがねのつるぎ", type: "weapon", atk: 20, price: 900, desc: "ちからを 20 あげる" },
+    flame: { id: "flame", name: "ほのおの剣", type: "weapon", atk: 34, price: 3e3, desc: "ちからを 34 あげる" },
+    // --- 防具 (def加算) ---
+    cloth: { id: "cloth", name: "たびのふく", type: "armor", def: 4, price: 50, desc: "みを 4 まもる" },
+    leather: { id: "leather", name: "かわのよろい", type: "armor", def: 10, price: 280, desc: "みを 10 まもる" },
+    chain: { id: "chain", name: "くさりかたびら", type: "armor", def: 18, price: 850, desc: "みを 18 まもる" },
+    plate: { id: "plate", name: "はがねのよろい", type: "armor", def: 28, price: 2600, desc: "みを 28 まもる" },
+    // --- 盾 (def加算) ---
+    woodShield: { id: "woodShield", name: "きのたて", type: "shield", def: 4, price: 90, desc: "みを 4 まもる" },
+    ironShield: { id: "ironShield", name: "てつのたて", type: "shield", def: 12, price: 800, desc: "みを 12 まもる" },
+    // --- 道具 ---
+    herb: { id: "herb", name: "やくそう", type: "useItem", heal: 30, price: 12, desc: "HPを 30 かいふく", consumable: true },
+    potion: { id: "potion", name: "いやしの水", type: "useItem", heal: 90, price: 60, desc: "HPを 90 かいふく", consumable: true },
+    mpHerb: { id: "mpHerb", name: "まりょくの実", type: "useItem", healMp: 20, price: 80, desc: "MPを 20 かいふく", consumable: true },
+    // --- 鍵アイテム ---
+    swirlKey: { id: "swirlKey", name: "うずまきの鍵", type: "key", price: 0, desc: "西の洞の おくの とびらを ひらく" }
+  };
+  function getItem(id) {
+    return ITEMS[id];
+  }
+  var SHOP_STOCK = {
+    townWeapon: ["branch", "copper", "iron"],
+    townArmor: ["cloth", "leather", "woodShield", "ironShield"],
+    townItem: ["herb", "potion", "mpHerb"],
+    swampWeapon: ["iron", "flame"],
+    swampArmor: ["chain", "plate"],
+    swampItem: ["herb", "potion", "mpHerb"]
+  };
+  var INN_PRICE = { town: 6, swamp: 20 };
+
+  // src/player/player.js
+  var Player = class _Player {
+    constructor(name = "ユウシャ") {
+      this.name = name;
+      this.lv = 1;
+      this.exp = 0;
+      const s = statsForLevel(1);
+      this.maxHp = s.maxHp;
+      this.hp = s.maxHp;
+      this.maxMp = s.maxMp;
+      this.mp = s.maxMp;
+      this.str = s.str;
+      this.agi = s.agi;
+      this.gold = 0;
+      this.weapon = null;
+      this.armor = null;
+      this.shield = null;
+      this.items = [];
+      this.spells = [];
+      this.pos = { map: "castle", x: 7, y: 11, dir: "up" };
+      this.flags = {
+        metKing: false,
+        gotKey: false,
+        savedPrincess: false,
+        galdisDefeated: false,
+        bridgeSolved: false
+      };
+    }
+    // 装備込みの攻撃力・守備力
+    get atk() {
+      return this.str + (this.weapon ? getItem(this.weapon).atk : 0);
+    }
+    get def() {
+      let d = Math.floor(this.agi / 3);
+      if (this.armor) d += getItem(this.armor).def;
+      if (this.shield) d += getItem(this.shield).def;
+      return d;
+    }
+    addExp(amount) {
+      this.exp += amount;
+      const newLv = levelForExp(this.exp);
+      const ups = [];
+      while (this.lv < newLv) {
+        this.lv++;
+        const s = statsForLevel(this.lv);
+        const dHp = s.maxHp - this.maxHp;
+        const dMp = s.maxMp - this.maxMp;
+        this.maxHp = s.maxHp;
+        this.maxMp = s.maxMp;
+        this.str = s.str;
+        this.agi = s.agi;
+        this.hp = Math.min(this.maxHp, this.hp + dHp);
+        this.mp = Math.min(this.maxMp, this.mp + dMp);
+        const learned = SPELL_LEARN[this.lv];
+        if (learned && !this.spells.includes(learned)) this.spells.push(learned);
+        ups.push({ lv: this.lv, learned });
+      }
+      return ups;
+    }
+    expToNext() {
+      return expToNext(this.exp);
+    }
+    addItem(id, qty = 1) {
+      const it = getItem(id);
+      if (!it) return false;
+      if (it.consumable) {
+        const slot = this.items.find((s) => s.id === id);
+        if (slot) slot.qty += qty;
+        else this.items.push({ id, qty });
+      } else {
+        if (!this.items.find((s) => s.id === id)) this.items.push({ id, qty: 1 });
+      }
+      return true;
+    }
+    removeItem(id, qty = 1) {
+      const idx = this.items.findIndex((s) => s.id === id);
+      if (idx < 0) return false;
+      this.items[idx].qty -= qty;
+      if (this.items[idx].qty <= 0) this.items.splice(idx, 1);
+      return true;
+    }
+    hasItem(id) {
+      return this.items.some((s) => s.id === id);
+    }
+    equip(id) {
+      const it = getItem(id);
+      if (!it) return false;
+      if (it.type === "weapon") this.weapon = id;
+      else if (it.type === "armor") this.armor = id;
+      else if (it.type === "shield") this.shield = id;
+      else return false;
+      return true;
+    }
+    // 現在 weapon/armor/shield のいずれかに装備中か
+    isEquipped(id) {
+      return this.weapon === id || this.armor === id || this.shield === id;
+    }
+    // 装備解除：該当スロットを null に（武器→素手 / 防具・盾→なし）。atk/defは再計算される。
+    unequip(id) {
+      let changed = false;
+      if (this.weapon === id) {
+        this.weapon = null;
+        changed = true;
+      }
+      if (this.armor === id) {
+        this.armor = null;
+        changed = true;
+      }
+      if (this.shield === id) {
+        this.shield = null;
+        changed = true;
+      }
+      return changed;
+    }
+    heal(n) {
+      const before = this.hp;
+      this.hp = Math.max(0, Math.min(this.maxHp, this.hp + n));
+      return this.hp - before;
+    }
+    healMp(n) {
+      const before = this.mp;
+      this.mp = Math.max(0, Math.min(this.maxMp, this.mp + n));
+      return this.mp - before;
+    }
+    fullHeal() {
+      this.hp = this.maxHp;
+      this.mp = this.maxMp;
+    }
+    // ダメージ適用：HPは0未満にならないようクランプ。実際に減った量を返す。
+    takeDamage(n) {
+      const before = this.hp;
+      this.hp = Math.max(0, this.hp - Math.max(0, n));
+      return before - this.hp;
+    }
+    spendMp(n) {
+      const before = this.mp;
+      this.mp = Math.max(0, this.mp - Math.max(0, n));
+      return before - this.mp;
+    }
+    isDead() {
+      return this.hp <= 0;
+    }
+    // セーブ用シリアライズ
+    toJSON() {
+      return {
+        name: this.name,
+        lv: this.lv,
+        exp: this.exp,
+        maxHp: this.maxHp,
+        hp: this.hp,
+        maxMp: this.maxMp,
+        mp: this.mp,
+        str: this.str,
+        agi: this.agi,
+        gold: this.gold,
+        weapon: this.weapon,
+        armor: this.armor,
+        shield: this.shield,
+        items: this.items,
+        spells: this.spells,
+        pos: this.pos,
+        flags: this.flags
+      };
+    }
+    static fromJSON(d) {
+      const p = new _Player(d.name);
+      Object.assign(p, d);
+      p.pos = Object.assign({ map: "castle", x: 7, y: 11, dir: "up" }, d.pos || {});
+      p.flags = Object.assign({ metKing: false, gotKey: false, savedPrincess: false, galdisDefeated: false, bridgeSolved: false }, d.flags || {});
+      p.items = Array.isArray(d.items) ? d.items : [];
+      p.spells = Array.isArray(d.spells) ? d.spells : [];
+      p.exp = Number.isFinite(d.exp) ? d.exp : 0;
+      p.lv = Math.max(1, Math.min(30, levelForExp(p.exp)));
+      const s = statsForLevel(p.lv);
+      const prevMaxHp = Number.isFinite(d.maxHp) ? d.maxHp : s.maxHp;
+      const prevMaxMp = Number.isFinite(d.maxMp) ? d.maxMp : s.maxMp;
+      const wasFullHp = Number.isFinite(d.hp) && d.hp >= prevMaxHp;
+      const wasFullMp = Number.isFinite(d.mp) && d.mp >= prevMaxMp;
+      p.maxHp = s.maxHp;
+      p.maxMp = s.maxMp;
+      p.str = s.str;
+      p.agi = s.agi;
+      p.hp = wasFullHp ? p.maxHp : Math.max(1, Math.min(p.maxHp, Number.isFinite(d.hp) ? d.hp : p.maxHp));
+      p.mp = wasFullMp ? p.maxMp : Math.max(0, Math.min(p.maxMp, Number.isFinite(d.mp) ? d.mp : p.maxMp));
+      for (let lv = 1; lv <= p.lv; lv++) {
+        const learned = SPELL_LEARN[lv];
+        if (learned && !p.spells.includes(learned)) p.spells.push(learned);
+      }
+      return p;
+    }
+  };
+
+  // src/world/mapData.js
+  var TILE_DEF = {
+    ".": { kind: "grass", pass: true },
+    ",": { kind: "road", pass: true },
+    "~": { kind: "water", pass: false },
+    "^": { kind: "mountain", pass: false },
+    "T": { kind: "forest", pass: true },
+    "#": { kind: "wall", pass: false },
+    "_": { kind: "floor", pass: true },
+    "B": { kind: "brick", pass: true },
+    "=": { kind: "bridge", pass: true },
+    "s": { kind: "swamp", pass: true },
+    "D": { kind: "door", pass: true },
+    ">": { kind: "stairsDown", pass: true },
+    "<": { kind: "stairsUp", pass: true },
+    "W": { kind: "throne", pass: false },
+    "C": { kind: "chest", pass: false },
+    "I": { kind: "sign", pass: false },
+    "G": { kind: "floor", pass: true }
+  };
+  function grid2(rows) {
+    return rows.map((r) => r.split(""));
+  }
+  var castle = grid2([
+    "###############",
+    "#____#WWW#____#",
+    "#____#WWW#____#",
+    "#____DBBBD____#",
+    "#____BBBBB____#",
+    "#BBBBBBBBBBBBB#",
+    "#B_________B_B#",
+    "#B_#####_#_B_B#",
+    "#B_#___#_#_B_B#",
+    "#B_#___#___B_B#",
+    "#BBBBB_BBBBBB_#",
+    "#____B_B____B_#",
+    "######_########",
+    "######_########"
+  ]);
+  var town = grid2([
+    "#####,#########",
+    "#TT..,.....TT.#",
+    "#.DD.,.DD..T..#",
+    "#.__.,.__....,#",
+    "#....,.......,#",
+    "#,,,,,,,,,,,,,#",
+    "#.,..DD..,..T.#",
+    "#.,..__..,..T.#",
+    "#.,......,....#",
+    "#T,......,DD..#",
+    "#T,......,__..#",
+    "#.,...........#",
+    "#.,...DD......#",
+    "#.,...__......#",
+    "#####,########."
+  ]);
+  var field = grid2([
+    "^^^^^^^^^^^^^^^^^^^^^^",
+    "^..T..~~~....^^...TT.^",
+    "^.....~~.....^...T...^",
+    "^..TT........=.......^",
+    "^.........T..=...TT..^",
+    "^....C....~~~~.......^",
+    "^.........~~..T......^",
+    "^..TT........T...^^..^",
+    "^.....D.........D...^^",
+    "^.....,....T........T^",
+    "^.....,....T..TT.....^",
+    "^.....,....T....D....^",
+    "^.....,........T,....^",
+    "^.....,.TT......,...T^",
+    "^.....,...TT....,...^^",
+    "^.....,........,....^^",
+    "^.....,........,....^^",
+    "^..T..D.T......D.TT..^",
+    "^.....~~~~~~~........^",
+    "^^^^^^^^^^^^^^^^^^^^^^"
+  ]);
+  var cave = grid2([
+    "################",
+    "#<_____#______>#",
+    "#_####_#_####_##",
+    "#_#__#_#_#__#__#",
+    "#_#C_#___#__#_##",
+    "#_#__####____#_#",
+    "#_#_______##_#_#",
+    "#_#####_##_#_#_#",
+    "#_____#__#_#_#_#",
+    "###_#_##_#_#_#_#",
+    "#___#____#___#_#",
+    "#_###_####_##_##",
+    "#_#______D_____#",
+    "#_#_####_#####_#",
+    "#___#C_______#_#",
+    "################"
+  ]);
+  var caveInner = grid2([
+    "###########",
+    "#____<____#",
+    "#_#######_#",
+    "#_#WWWWW#_#",
+    "#_#_____#_#",
+    "#___#_____#",
+    "#_#_____#_#",
+    "#_#######_#",
+    "#_________#",
+    "###########"
+  ]);
+  var swampTown = grid2([
+    "#####ssssss####",
+    "#sT..s....sT..#",
+    "#s.DD.s.DD..s.#",
+    "#s.__.s.__..s.#",
+    "#s....s......s#",
+    "#sssssssssss.s#",
+    "#s..s..DD..s..#",
+    "#s..s..__..s..#",
+    "#s..s......s..#",
+    "#sssssss.sss.s#",
+    "#sT....,s....s#",
+    "#s.....sssss.s#",
+    "#sssss,ssssss##"
+  ]);
+  var caveTreasure = grid2([
+    "#######",
+    "#_____#",
+    "#_C_C_#",
+    "#__<__#",
+    "#######"
+  ]);
+  var darkCastle = grid2([
+    "###############",
+    "#<___________##",
+    "##_#########_##",
+    "#__#WWWWWWW#_##",
+    "#_##_______#_##",
+    "#_#__#####_#_##",
+    "#_#_##___#_#_##",
+    "#_#__#_#_#_#_##",
+    "#_##_#_#_#_#_##",
+    "#__#_#_#_#_#_##",
+    "##_#_#_#_#_#_##",
+    "#__#_#_#_#_#_##",
+    "#_##_#___#_#_##",
+    "#__########_###",
+    "#G___________##",
+    "###############"
+  ]);
+  var MAPS = {
+    castle: { name: "castle", tiles: castle, encounter: null, music: "castle" },
+    town: { name: "town", tiles: town, encounter: null, music: "town" },
+    field: { name: "field", tiles: field, encounter: "field", music: "field" },
+    cave: { name: "cave", tiles: cave, encounter: "cave", music: "cave" },
+    caveInner: { name: "caveInner", tiles: caveInner, encounter: "cave", music: "cave" },
+    swampTown: { name: "swampTown", tiles: swampTown, encounter: null, music: "town" },
+    caveTreasure: { name: "caveTreasure", tiles: caveTreasure, encounter: null, music: "cave" },
+    darkCastle: { name: "darkCastle", tiles: darkCastle, encounter: "darkCastle", music: "boss" }
+  };
+  var WARPS = {
+    "castle,6,13": { map: "field", x: 6, y: 9, dir: "down" },
+    "field,6,8": { map: "castle", x: 6, y: 11, dir: "up" },
+    "field,16,11": { map: "town", x: 5, y: 1, dir: "down" },
+    "town,5,0": { map: "field", x: 16, y: 10, dir: "up" },
+    "town,5,14": { map: "field", x: 16, y: 13, dir: "down" },
+    "field,5,17": { map: "cave", x: 1, y: 2, dir: "down" },
+    "cave,1,1": { map: "field", x: 5, y: 16, dir: "up" },
+    "cave,9,12": { map: "caveInner", x: 5, y: 8, dir: "up", requireKey: "swirlKey" },
+    "caveInner,5,1": { map: "cave", x: 10, y: 12, dir: "down" },
+    "field,6,17": { map: "swampTown", x: 6, y: 1, dir: "down" },
+    "swampTown,6,0": { map: "field", x: 6, y: 16, dir: "up" },
+    "cave,14,1": { map: "caveTreasure", x: 3, y: 2, dir: "down" },
+    "caveTreasure,3,3": { map: "cave", x: 13, y: 1, dir: "down" },
+    "field,15,8": { map: "darkCastle", x: 2, y: 1, dir: "down", requireFlag: "savedPrincess" },
+    "darkCastle,1,1": { map: "field", x: 15, y: 9, dir: "down" }
+  };
+  function getMap(key) {
+    return MAPS[key];
+  }
+  function tileAt(mapKey, x, y) {
+    const m = MAPS[mapKey];
+    if (!m) return null;
+    if (y < 0 || y >= m.tiles.length || x < 0 || x >= m.tiles[0].length) return "#";
+    return m.tiles[y][x];
+  }
+  function isPassable(mapKey, x, y) {
+    const ch = tileAt(mapKey, x, y);
+    const d = TILE_DEF[ch];
+    return d ? d.pass : false;
+  }
+
+  // src/data/strings.js
+  var STR = {
+    gameTitle: "竜王伝説",
+    gameSubtitle: "〜 蒼き炎の章 〜",
+    // 地名
+    places: {
+      castle: "アルゴス城",
+      town: "リント城下町",
+      field: "エルゼン平原",
+      cave: "西のうずまき洞",
+      swampTown: "ヌマベの里",
+      darkCastle: "竜王ガルディスの城"
+    },
+    // タイトル
+    title: {
+      newGame: "はじめから",
+      continue: "つづきから",
+      pressStart: "ボタンか クリックで すすむ",
+      askName: "なまえを いれてください",
+      noSave: "ぼうけんのしょが ありません",
+      welcome: (name) => `ようこそ ${name}よ。
+竜王伝説の せかいへ！`,
+      fileHelp: "E:かきだす  I:よみこむ",
+      exported: "ぼうけんのしょを\n ファイルに かきだした！",
+      importedTitle: (name) => `${name}の
+ ぼうけんを よみこんだ！`,
+      corrupt: "ぼうけんのしょが\n こわれています",
+      nothingToExport: "かきだす ぼうけんが ない。"
+    },
+    // 王様・城イベント
+    king: {
+      firstAudience: "おお ユウシャよ！\nよくぞ まいった。\nわが国は 竜王ガルディスに\n おびやかされておる。",
+      firstAudience2: "わが娘 ミレイユ姫も\n さらわれてしもうた。\nどうか 姫を すくい\n竜王を たおしておくれ！",
+      giveItems: "これを もっていくがよい。\n旅の したくを ととのえ\n まずは 城下町へ いくのじゃ。",
+      afterPrincess: "おお！ ミレイユを\n すくってくれたか！\nのこるは 竜王ガルディスのみ。\nたのんだぞ ユウシャよ！",
+      needPrincess: "竜王の城は おそろしい所。\nまずは さらわれた姫の\n手がかりを さがすのじゃ。",
+      cleared: "よくぞ 竜王をたおした！\nそなたこそ まことの ユウシャ。\nこの国の えいゆうじゃ！"
+    },
+    priest: {
+      save: "ぼうけんのしょに\n きろくを のこしますか？",
+      saved: "きろくしました。\nゆめゆめ ゆだんめさるな。",
+      savedTip: "きろくは 3日間 ゆうこう。\nとじる前に E:かきだしで\n バックアップ すると あんしん。",
+      healFull: "いのりを ささげました。\nHPと MPが かいふくした。",
+      revive: (name) => `${name}よ
+ しんでは なりませぬ…
+さあ もういちど！`
+    },
+    // 兵士・町人NPC
+    npc: {
+      soldier1: "ここは アルゴス城。\n王さまに ごようの ある者は\n おくの間へ。",
+      soldier2: "西の洞には 古い宝が\n ねむっているらしいぞ。",
+      townsman1: "武器も 防具も\n そろえてから いくんだね。\n生きて かえるために。",
+      townsman2: "竜王の城へは ふねが\n いるって うわさだよ。",
+      townsman3: "ヌマベの里の 老人が\n 姫の ことを 知ってるらしい。",
+      shopGuide: "いらっしゃい！\n何を おもとめかな？",
+      elder: "ミレイユ姫は 西の洞の\n おくに とらわれておる。\nこの「うずまきの鍵」を もって\n 助けに いくがよい。",
+      elderDone: "ミレイユ姫を よろしく\n たのみましたぞ。",
+      bridgeKeeper: "わしは 橋の番人。\nなぞなぞに こたえれば\n とおしてやろう。\n「朝は よっつ 昼は ふたつ\n夜は みっつ あしを もつ者は？」",
+      bridgeOK: "ほう…「人」と こたえたか。\nみごと！ とおるがよい。",
+      princess: "ああ ユウシャさま！\nたすけに きてくださったのね。\nさあ いっしょに\n かえりましょう！"
+    },
+    // 戦闘メッセージ
+    battle: {
+      appear: (name) => `${name}が あらわれた！`,
+      appearGroup: (name) => `${name}たちが あらわれた！`,
+      command: "コマンド？",
+      attack: (name) => `${name}の こうげき！`,
+      damage: (name, n) => `${name}に ${n}の ダメージ！`,
+      miss: (name) => `${name}は こうげきを かわした！`,
+      playerMiss: "こうげきは はずれた！",
+      enemyTurn: (name) => `${name}の こうげき！`,
+      playerHurt: (n) => `${n}の ダメージを うけた！`,
+      castSpell: (who, spell) => `${who}は ${spell}を となえた！`,
+      spellDamage: (name, n) => `${name}に ${n}の ダメージ！`,
+      healSpell: (n) => `HPが ${n} かいふくした！`,
+      noMp: "MPが たりない！",
+      fledOK: "うまく にげだした！",
+      fledNG: "しかし まわりこまれた！",
+      enemyFled: (name) => `${name}は にげだした！`,
+      win: (name) => `${name}を たおした！`,
+      expGold: (e, g) => `けいけんち ${e} かくとく！
+${g} ゴールド てにいれた！`,
+      levelUp: (lv) => `レベルが ${lv}に あがった！`,
+      learnSpell: (s) => `じゅもん「${s}」を おぼえた！`,
+      statUp: "ちからが みなぎってきた！",
+      useItem: (who, item) => `${who}は ${item}を つかった！`,
+      itemHeal: (n) => `HPが ${n} かいふくした！`,
+      death: "目の前が まっくらに なった…",
+      bossPhase: "竜王ガルディスは\n しんの すがたを あらわした！"
+    },
+    // メニュー
+    menu: {
+      talk: "はなす",
+      status: "つよさ",
+      items: "どうぐ",
+      spells: "じゅもん",
+      equip: "そうび",
+      search: "しらべる",
+      save: "きろく",
+      fileOut: "かきだす",
+      fileIn: "よみこむ",
+      close: "とじる",
+      nothing: "だれも いない。",
+      nothingHere: "なにも みつからなかった。",
+      foundGold: (g) => `${g}ゴールド みつけた！`,
+      foundItem: (i) => `${i}を みつけた！`,
+      emptyItems: "なにも もっていない。",
+      emptySpells: "じゅもんを おぼえていない。",
+      cantUseHere: "ここでは つかえない。",
+      usedItem: (i, n) => `${i}を つかった。
+HPが ${n} かいふくした！`,
+      equipped: (e) => `${e}を そうびした。`,
+      unequipped: (e) => `${e}を はずした。`
+    },
+    // 店
+    shop: {
+      weapon: "ぶきや",
+      armor: "ぼうぐや",
+      item: "どうぐや",
+      inn: "やどや",
+      welcome: "いらっしゃい！",
+      buy: "かう",
+      sell: "うる",
+      leave: "でる",
+      whatBuy: "どれに しますか？",
+      bought: (i) => `${i}を かいました！`,
+      notEnough: "ゴールドが たりません。",
+      full: "もう もてません。",
+      thanks: "まいど あり！",
+      innPrompt: (g) => `ひとばん ${g}ゴールドです。
+ おとまりに なりますか？`,
+      innRest: "ぐっすり おやすみ…\nHPと MPが ぜんかいした！",
+      innNoGold: "ゴールドが たりないようで…",
+      sellPrompt: "どれを うりますか？",
+      sold: (i, g) => `${i}を ${g}ゴールドで うりました。`
+    },
+    // 共通
+    common: {
+      yes: "はい",
+      no: "いいえ",
+      gold: (g) => `${g} G`,
+      gameOver: "ゲームオーバー",
+      locked: "カギが かかっている。",
+      unlock: "うずまきの鍵で とびらを あけた！",
+      needKey: "おくへの とびらだ。\nなにか カギが いるようだ。",
+      ending1: "竜王ガルディスは ほろび\nせかいに ひかりが もどった。",
+      ending2: (name) => `ユウシャ ${name}と ミレイユ姫は
+城へと がいせんした。`,
+      ending3: "そして 二人は\nいつまでも しあわせに\n くらしたという。",
+      endingThanks: "— おわり —\nあそんでくれて ありがとう！"
+    }
+  };
+
+  // src/world/npc.js
+  var NPCS = [
+    // === アルゴス城 ===
+    {
+      map: "castle",
+      x: 7,
+      y: 2,
+      sprite: "king",
+      dir: "down",
+      name: "王",
+      action: (g) => {
+        const p = g.player;
+        if (!p.flags.metKing) {
+          g.msg.show([STR.king.firstAudience, STR.king.firstAudience2, STR.king.giveItems], () => {
+            p.flags.metKing = true;
+            p.gold += 120;
+            p.addItem("herb", 3);
+            p.addItem("branch");
+            p.equip("branch");
+            p.addItem("cloth");
+            p.equip("cloth");
+            g.msg.show(["ゴールドと そうびを\n さずかった！"]);
+          });
+        } else if (p.flags.savedPrincess && !p.flags.galdisDefeated) {
+          g.msg.show([STR.king.afterPrincess]);
+        } else if (p.flags.galdisDefeated) {
+          g.msg.show([STR.king.cleared]);
+        } else {
+          g.msg.show([STR.king.needPrincess]);
+        }
+      }
+    },
+    {
+      map: "castle",
+      x: 4,
+      y: 8,
+      sprite: "priest",
+      dir: "down",
+      name: "神官",
+      action: (g) => {
+        g.msg.showChoice(STR.priest.save, [STR.common.yes, STR.common.no], (sel) => {
+          if (sel === 0) {
+            g.saveGame();
+            g.msg.show([STR.priest.saved, STR.priest.healFull], () => g.player.fullHeal());
+          }
+        });
+      }
+    },
+    {
+      map: "castle",
+      x: 3,
+      y: 6,
+      sprite: "soldier",
+      dir: "right",
+      name: "兵士",
+      action: (g) => g.msg.show([STR.npc.soldier1])
+    },
+    {
+      map: "castle",
+      x: 11,
+      y: 9,
+      sprite: "soldier",
+      dir: "left",
+      name: "兵士",
+      action: (g) => g.msg.show([STR.npc.soldier2])
+    },
+    // === リント城下町 ===
+    {
+      map: "town",
+      x: 2,
+      y: 3,
+      sprite: "shop",
+      dir: "down",
+      name: "武器屋",
+      action: (g) => g.openShop("weapon")
+    },
+    {
+      map: "town",
+      x: 7,
+      y: 3,
+      sprite: "shop",
+      dir: "down",
+      name: "防具屋",
+      action: (g) => g.openShop("armor")
+    },
+    {
+      map: "town",
+      x: 5,
+      y: 7,
+      sprite: "shop",
+      dir: "down",
+      name: "道具屋",
+      action: (g) => g.openShop("item")
+    },
+    {
+      map: "town",
+      x: 9,
+      y: 10,
+      sprite: "shop",
+      dir: "down",
+      name: "宿屋",
+      action: (g) => g.openInn("town")
+    },
+    {
+      map: "town",
+      x: 6,
+      y: 13,
+      sprite: "townsman",
+      dir: "down",
+      name: "町人",
+      action: (g) => g.msg.show([STR.npc.townsman1])
+    },
+    {
+      map: "town",
+      x: 11,
+      y: 8,
+      sprite: "townsman",
+      dir: "left",
+      name: "町人",
+      action: (g) => g.msg.show([STR.npc.townsman3])
+    },
+    {
+      map: "town",
+      x: 3,
+      y: 9,
+      sprite: "townsman",
+      dir: "right",
+      name: "町人",
+      action: (g) => g.msg.show([STR.npc.townsman2])
+    },
+    // === エルゼン平原：橋の番人（サブイベント） ===
+    {
+      map: "field",
+      x: 12,
+      y: 3,
+      sprite: "bridge",
+      dir: "down",
+      name: "橋の番人",
+      action: (g) => {
+        const p = g.player;
+        if (p.flags.bridgeSolved) {
+          g.msg.show(["よい旅を。"]);
+          return;
+        }
+        g.msg.show([STR.npc.bridgeKeeper], () => {
+          g.msg.showChoice("こたえは？", ["けもの", "人", "とり"], (sel) => {
+            if (sel === 1) {
+              p.flags.bridgeSolved = true;
+              g.msg.show([STR.npc.bridgeOK, "ごほうびに\n100ゴールドを もらった！"], () => {
+                p.gold += 100;
+              });
+            } else {
+              g.msg.show(["ちがうな。\nまた こんど。"]);
+            }
+          });
+        });
+      }
+    },
+    // === ヌマベの里 ===
+    {
+      map: "swampTown",
+      x: 7,
+      y: 10,
+      sprite: "elder",
+      dir: "down",
+      name: "里の老人",
+      action: (g) => {
+        const p = g.player;
+        if (!p.flags.gotKey) {
+          g.msg.show([STR.npc.elder], () => {
+            p.flags.gotKey = true;
+            p.addItem("swirlKey");
+            g.msg.show(["「うずまきの鍵」を\n てにいれた！"]);
+          });
+        } else {
+          g.msg.show([STR.npc.elderDone]);
+        }
+      }
+    },
+    {
+      map: "swampTown",
+      x: 2,
+      y: 3,
+      sprite: "shop",
+      dir: "down",
+      name: "武器屋",
+      action: (g) => g.openShop("swampWeapon")
+    },
+    {
+      map: "swampTown",
+      x: 7,
+      y: 3,
+      sprite: "shop",
+      dir: "down",
+      name: "防具屋",
+      action: (g) => g.openShop("swampArmor")
+    },
+    {
+      map: "swampTown",
+      x: 7,
+      y: 7,
+      sprite: "shop",
+      dir: "down",
+      name: "道具屋",
+      action: (g) => g.openShop("swampItem")
+    },
+    {
+      map: "swampTown",
+      x: 4,
+      y: 11,
+      sprite: "priest",
+      dir: "right",
+      name: "宿屋",
+      action: (g) => g.openInn("swamp")
+    },
+    // === うずまき洞 最深部：姫 ===
+    {
+      map: "caveInner",
+      x: 4,
+      y: 4,
+      sprite: "princess",
+      dir: "down",
+      name: "ミレイユ姫",
+      action: (g) => {
+        const p = g.player;
+        if (!p.flags.savedPrincess) {
+          g.msg.show([STR.npc.princess], () => {
+            p.flags.savedPrincess = true;
+            g.msg.show(["姫を すくいだした！\n竜王の城への とびらが\n ひらかれた…！"], () => {
+              g.warpTo("field", 10, 8, "down");
+            });
+          });
+        }
+      }
+    }
+  ];
+  function npcsOnMap(mapKey) {
+    return NPCS.filter((n) => n.map === mapKey);
+  }
+  function npcAt(mapKey, x, y, player) {
+    return NPCS.find((n) => {
+      if (n.map !== mapKey || n.x !== x || n.y !== y) return false;
+      if (n.sprite === "princess" && player.flags.savedPrincess) return false;
+      return true;
+    });
+  }
+
+  // src/world/mapRenderer.js
+  var TILE = 32;
+  function renderMap(ctx, mapKey, camX, camY, viewW, viewH, player, frame) {
+    const m = MAPS[mapKey];
+    if (!m) return;
+    const cols = m.tiles[0].length, rows = m.tiles.length;
+    const startCol = Math.max(0, Math.floor(camX / TILE));
+    const endCol = Math.min(cols - 1, Math.floor((camX + viewW) / TILE));
+    const startRow = Math.max(0, Math.floor(camY / TILE));
+    const endRow = Math.min(rows - 1, Math.floor((camY + viewH) / TILE));
+    for (let r = startRow; r <= endRow; r++) {
+      for (let c = startCol; c <= endCol; c++) {
+        const ch = m.tiles[r][c];
+        const def = TILE_DEF[ch] || { kind: "grass" };
+        const px = c * TILE - camX, py = r * TILE - camY;
+        if (["stairsDown", "stairsUp", "door", "chest", "sign", "throne"].includes(def.kind)) {
+          const baseKind = mapKey === "cave" || mapKey === "caveInner" || mapKey === "castle" || mapKey === "darkCastle" ? "floor" : "grass";
+          drawTile(ctx, baseKind, px, py, TILE);
+        }
+        drawTile(ctx, def.kind, px, py, TILE);
+      }
+    }
+    for (const npc of npcsOnMap(mapKey)) {
+      if (npc.sprite === "princess" && player.flags.savedPrincess) continue;
+      const px = npc.x * TILE - camX, py = npc.y * TILE - camY;
+      if (px < -TILE || px > viewW || py < -TILE || py > viewH) continue;
+      drawSprite(ctx, npc.sprite, npc.dir, px, py, TILE);
+    }
+  }
+  function computeCamera(mapKey, playerX, playerY, viewW, viewH) {
+    const m = MAPS[mapKey];
+    const mapW = m.tiles[0].length * TILE, mapH = m.tiles.length * TILE;
+    let camX = playerX * TILE + TILE / 2 - viewW / 2;
+    let camY = playerY * TILE + TILE / 2 - viewH / 2;
+    camX = Math.max(0, Math.min(camX, Math.max(0, mapW - viewW)));
+    camY = Math.max(0, Math.min(camY, Math.max(0, mapH - viewH)));
+    if (mapW < viewW) camX = (mapW - viewW) / 2;
+    if (mapH < viewH) camY = (mapH - viewH) / 2;
+    return { camX, camY };
+  }
+
+  // src/world/chests.js
+  var CHESTS = {
+    "field,5,5": { gold: 60 },
+    "cave,3,4": { item: "leather" },
+    "cave,5,14": { gold: 150 },
+    // 右上 >(14,1) の先の宝物部屋
+    "caveTreasure,2,2": { gold: 200 },
+    "caveTreasure,4,2": { item: "potion" }
+    // 竜王城の玉座前に最強回復をいくつか（任意探索ではなくマップ進行で拾える位置）
+  };
+
+  // src/battle/enemies.js
+  var ENEMIES = {
+    // --- エルゼン平原 ---
+    slimeA: { id: "slimeA", name: "アオドロ", hp: 8, atk: 7, def: 3, agi: 4, exp: 2, gold: 3, spells: [], color: "#4aa3ff" },
+    ratA: { id: "ratA", name: "のねずみ", hp: 10, atk: 9, def: 4, agi: 8, exp: 3, gold: 4, spells: [], color: "#9b7a4a" },
+    birdA: { id: "birdA", name: "つつきどり", hp: 13, atk: 12, def: 5, agi: 12, exp: 4, gold: 6, spells: [], color: "#e0c040" },
+    wolfA: { id: "wolfA", name: "のらオオカミ", hp: 28, atk: 18, def: 7, agi: 11, exp: 7, gold: 9, spells: [], color: "#888" },
+    // --- 西のうずまき洞 ---
+    batC: { id: "batC", name: "どうくつコウモリ", hp: 22, atk: 16, def: 6, agi: 14, exp: 6, gold: 7, spells: [], color: "#7a4aaa" },
+    ghostC: { id: "ghostC", name: "まよいびと", hp: 34, atk: 22, def: 9, agi: 9, exp: 10, gold: 14, spells: ["firaLow"], color: "#cfe" },
+    skelC: { id: "skelC", name: "がいこつ兵", hp: 52, atk: 28, def: 14, agi: 8, exp: 16, gold: 20, spells: [], color: "#eee" },
+    golemMini: { id: "golemMini", name: "いわのみはり", hp: 70, atk: 35, def: 22, agi: 5, exp: 30, gold: 40, spells: [], color: "#a86" },
+    // 洞窟中ボス
+    caveBoss: { id: "caveBoss", name: "どくのぬし", hp: 110, atk: 42, def: 18, agi: 12, exp: 70, gold: 120, spells: ["firaLow"], color: "#5b3", boss: true },
+    // --- 竜王城周辺 / 内部 ---
+    knightD: { id: "knightD", name: "やみの騎士", hp: 95, atk: 49, def: 26, agi: 14, exp: 40, gold: 55, spells: [], color: "#446" },
+    mageD: { id: "mageD", name: "あんこく魔導士", hp: 78, atk: 35, def: 18, agi: 16, exp: 44, gold: 60, spells: ["firaMid"], color: "#a2f" },
+    golemD: { id: "golemD", name: "てつゴーレム", hp: 150, atk: 58, def: 38, agi: 6, exp: 65, gold: 90, spells: [], color: "#778" },
+    dragonD: { id: "dragonD", name: "こりゅう", hp: 140, atk: 56, def: 30, agi: 18, exp: 80, gold: 100, spells: ["firaMid"], color: "#3a6" },
+    // --- ラスボス竜王（2段階） ---
+    galdis1: { id: "galdis1", name: "竜王ガルディス", hp: 230, atk: 64, def: 34, agi: 16, exp: 0, gold: 0, spells: ["firaMid"], color: "#c33", boss: true, fleeable: false },
+    galdis2: { id: "galdis2", name: "真・竜王ガルディス", hp: 340, atk: 84, def: 42, agi: 20, exp: 1e3, gold: 2e3, spells: ["firaMid"], color: "#900", boss: true, fleeable: false, phase2: true }
+  };
+  function getEnemy(id) {
+    return { ...ENEMIES[id] };
+  }
+  var ENCOUNTER_TABLE = {
+    field: [
+      { id: "slimeA", w: 30 },
+      { id: "ratA", w: 28 },
+      { id: "birdA", w: 24 },
+      { id: "wolfA", w: 18 }
+    ],
+    cave: [
+      { id: "batC", w: 28 },
+      { id: "ghostC", w: 26 },
+      { id: "skelC", w: 24 },
+      { id: "golemMini", w: 14 }
+    ],
+    darkCastle: [
+      { id: "knightD", w: 26 },
+      { id: "mageD", w: 24 },
+      { id: "golemD", w: 22 },
+      { id: "dragonD", w: 28 }
+    ]
+  };
+  function rollEncounter(mapKey) {
+    const table = ENCOUNTER_TABLE[mapKey];
+    if (!table) return null;
+    const total = table.reduce((s, e) => s + e.w, 0);
+    let r = Math.random() * total;
+    for (const e of table) {
+      r -= e.w;
+      if (r <= 0) return e.id;
+    }
+    return table[0].id;
+  }
+
+  // src/battle/formulas.js
+  function rint(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+  function physicalDamage(atk, def) {
+    const base2 = atk / 2 - def / 4;
+    const min = Math.floor(base2 * 0.78);
+    const max = Math.ceil(base2 * 1.05);
+    let dmg = rint(Math.min(min, max), Math.max(min, max));
+    if (dmg < 1) dmg = base2 > 0 ? 1 : 0;
+    if (Math.random() < 1 / 32) dmg = Math.max(dmg, Math.floor(atk / 2 * rint(9, 11) / 10));
+    return Math.max(0, dmg);
+  }
+  function spellDamage(power, variance) {
+    return Math.max(1, power + rint(-variance, variance));
+  }
+  function healAmount(power, variance) {
+    return Math.max(1, power + rint(-variance, variance));
+  }
+  function isHit(attackerAgi, defenderAgi) {
+    let evade = 0.04;
+    if (defenderAgi > attackerAgi) {
+      evade += Math.min(0.18, (defenderAgi - attackerAgi) / attackerAgi * 0.25);
+    }
+    return Math.random() > evade;
+  }
+  function canFlee(playerAgi, enemyAgi) {
+    let chance = 0.5 + (playerAgi - enemyAgi) / (playerAgi + enemyAgi + 1) * 0.5;
+    chance = Math.max(0.12, Math.min(0.95, chance));
+    return Math.random() < chance;
+  }
+  function playerFirst(playerAgi, enemyAgi) {
+    const p = playerAgi * (0.8 + Math.random() * 0.4);
+    const e = enemyAgi * (0.8 + Math.random() * 0.4);
+    return p >= e;
+  }
+
+  // src/ui/messageWindow.js
+  var MSG_FONT = '20px "MS Gothic", monospace';
+  var MSG_PAD_X = 18;
+  var MSG_PAD_Y = 16;
+  var MSG_LINE_H = 26;
+  var MSG_WIN_H = 134;
+  var MSG_WIN_BOTTOM = 150;
+  var MessageWindow = class {
+    constructor() {
+      this.queue = [];
+      this.current = "";
+      this.shown = 0;
+      this.timer = 0;
+      this.speed = 1.6;
+      this.active = false;
+      this.onComplete = null;
+      this.choices = null;
+      this._wrapCache = {};
+    }
+    // 1文字ずつmeasureText幅で詰め、内幅を超えたら改行。
+    // 元の手動\nは尊重しつつ、各行をさらに自動折り返しする。
+    _wrapText(ctx, text, maxWidth) {
+      ctx.font = MSG_FONT;
+      const out = [];
+      const paragraphs = String(text).split("\n");
+      for (const para of paragraphs) {
+        let line = "";
+        let lineW = 0;
+        for (const chFromText of para) {
+          const cw = ctx.measureText(chFromText).width;
+          if (lineW + cw > maxWidth && line.length > 0) {
+            out.push(line);
+            line = chFromText;
+            lineW = cw;
+          } else {
+            line += chFromText;
+            lineW += cw;
+          }
+        }
+        out.push(line);
+      }
+      return out;
+    }
+    // 折り返し済み行配列を、ウィンドウ高さに収まる行数ごとのページ（\n結合文字列）に分割。
+    _paginate(ctx, text, maxWidth, maxLines) {
+      const lines = this._wrapText(ctx, text, maxWidth);
+      const pages = [];
+      for (let i = 0; i < lines.length; i += maxLines) {
+        pages.push(lines.slice(i, i + maxLines).join("\n"));
+      }
+      return pages.length ? pages : [""];
+    }
+    // 描画コンテキストを使って queue 内の生メッセージをページ展開する。
+    // draw時に一度だけ呼ばれ、未展開なら展開する。
+    _ensurePaged(ctx, W) {
+      if (this._paged || !this._rawQueue) return;
+      const innerW = W - 16 * 2 - MSG_PAD_X * 2;
+      const innerH = MSG_WIN_H - MSG_PAD_Y * 2;
+      const maxLines = Math.max(1, Math.floor(innerH / MSG_LINE_H));
+      const pages = [];
+      for (const raw of this._rawQueue) {
+        for (const pg of this._paginate(ctx, raw, innerW, maxLines)) pages.push(pg);
+      }
+      this.queue = pages;
+      this._paged = true;
+      this._rawQueue = null;
+      this.current = "";
+      this.shown = 0;
+      this._next();
+    }
+    // 1つ以上のメッセージを表示。\nで改行可。
+    // 実際の折り返し/ページ分割は最初のdraw時（ctx/W判明後）に行う。
+    show(messages, onComplete = null) {
+      const arr = Array.isArray(messages) ? messages : [messages];
+      this._rawQueue = arr.slice();
+      this._paged = false;
+      this.queue = [];
+      this.current = "";
+      this.shown = 0;
+      this.onComplete = onComplete;
+      this.active = true;
+      this.choices = null;
+    }
+    // 選択肢付きメッセージ
+    showChoice(message, options, onSelect) {
+      this.queue = [];
+      this._rawQueue = null;
+      this._paged = true;
+      this._choiceRaw = message;
+      this.current = message;
+      this.shown = message.length;
+      this.active = true;
+      this.choices = { options, index: 0, onSelect };
+    }
+    _next() {
+      if (this.queue.length === 0) {
+        this.active = false;
+        const cb = this.onComplete;
+        this.onComplete = null;
+        if (cb) cb();
+        return;
+      }
+      this.current = this.queue.shift();
+      this.shown = 0;
+      this.timer = 0;
+    }
+    isTyping() {
+      return this.shown < this.current.length;
+    }
+    // confirm入力時：文字送り中なら全表示、完了済みなら次へ
+    advance() {
+      if (!this.active) return;
+      if (this._rawQueue && !this._paged) return;
+      if (this.choices) {
+        const ch = this.choices;
+        const cb = ch.onSelect;
+        const sel = ch.index;
+        this.choices = null;
+        this.active = false;
+        if (cb) cb(sel, ch.options[sel]);
+        return;
+      }
+      if (this.isTyping()) {
+        this.shown = this.current.length;
+      } else {
+        this._next();
+      }
+    }
+    moveChoice(dir) {
+      if (!this.choices) return;
+      const n = this.choices.options.length;
+      if (dir === "up") this.choices.index = (this.choices.index - 1 + n) % n;
+      if (dir === "down") this.choices.index = (this.choices.index + 1) % n;
+    }
+    update() {
+      if (!this.active || this.choices) return;
+      if (this._rawQueue && !this._paged) return;
+      if (this.isTyping()) {
+        this.timer += this.speed;
+        while (this.timer >= 1 && this.shown < this.current.length) {
+          this.timer -= 1;
+          this.shown++;
+        }
+      }
+    }
+    draw(ctx, W, H) {
+      if (!this.active) return;
+      const pad = 16;
+      const wx = pad, wy = H - MSG_WIN_BOTTOM, ww = W - pad * 2, wh = MSG_WIN_H;
+      const innerW = ww - MSG_PAD_X * 2;
+      this._ensurePaged(ctx, W);
+      if (!this.active) return;
+      drawWindow(ctx, wx, wy, ww, wh);
+      ctx.fillStyle = "#fff";
+      ctx.font = MSG_FONT;
+      ctx.textBaseline = "top";
+      let drawText;
+      if (this.choices) {
+        drawText = this._wrapText(ctx, this._choiceRaw != null ? this._choiceRaw : this.current, innerW).join("\n");
+      } else {
+        drawText = this.current.slice(0, this.shown);
+      }
+      const lines = drawText.split("\n");
+      let yy = wy + MSG_PAD_Y;
+      for (const line of lines) {
+        ctx.fillText(line, wx + MSG_PAD_X, yy);
+        yy += MSG_LINE_H;
+      }
+      if (this.choices) {
+        const cw = 130, ch = this.choices.options.length * 28 + 16;
+        const cx = wx + ww - cw - 10, cy = wy - ch - 6;
+        drawWindow(ctx, cx, cy, cw, ch);
+        ctx.font = '18px "MS Gothic", monospace';
+        this.choices.options.forEach((op, i) => {
+          const oy = cy + 10 + i * 28;
+          if (i === this.choices.index) {
+            ctx.fillStyle = "#e0d040";
+            ctx.fillText("▶", cx + 8, oy);
+            ctx.fillStyle = "#fff";
+          } else {
+            ctx.fillStyle = "#fff";
+          }
+          ctx.fillText(op, cx + 30, oy);
+        });
+      } else if (!this.isTyping()) {
+        if (Math.floor(Date.now() / 400) % 2 === 0) {
+          ctx.fillStyle = "#e0d040";
+          ctx.fillText("▼", wx + ww - 36, wy + wh - 30);
+        }
+      }
+    }
+  };
+  function hpColor(hp, maxHp, normal = "#fff") {
+    if (hp <= 0) return "#FF0000";
+    if (maxHp > 0 && hp / maxHp < 0.25) return "#C8A000";
+    return normal;
+  }
+  function drawWindow(ctx, x, y, w, h) {
+    ctx.fillStyle = "rgba(8,8,24,0.95)";
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+    ctx.strokeStyle = "#88a";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 6, y + 6, w - 12, h - 12);
+  }
+
+  // src/battle/battle.js
+  var Battle = class {
+    constructor(game, enemyId, opts = {}) {
+      this.game = game;
+      this.player = game.player;
+      this.enemy = getEnemy(enemyId);
+      this.enemyMaxHp = this.enemy.hp;
+      this.isBoss = !!this.enemy.boss;
+      this.fleeable = this.enemy.fleeable !== false && !this.isBoss ? true : this.enemy.fleeable === true;
+      this.opts = opts;
+      this.phase = "intro";
+      this.commandIndex = 0;
+      this.commands = ["たたかう", "じゅもん", "どうぐ", "にげる"];
+      this.submenu = null;
+      this.msgQueue = [];
+      this.shakeTimer = 0;
+      this.enemyHurtTimer = 0;
+      this.flashTimer = 0;
+      this.battleOver = false;
+      this.result = null;
+      const grp = this.isBoss ? this.enemy.name : this.enemy.name;
+      this.pushMsg(STR.battle.appear(grp));
+      this.phase = "message";
+      const enemyFirst = !this.isBoss && !playerFirst(this.player.agi, this.enemy.agi);
+      this.afterMessage = enemyFirst ? () => {
+        this.pushMsg("てきに せんせいを とられた！");
+        this.phase = "message";
+        this.afterMessage = () => this._enemyTurn();
+      } : () => {
+        this.phase = "command";
+      };
+    }
+    pushMsg(text) {
+      this.msgQueue.push(text);
+    }
+    // ===== 入力処理 =====
+    handleInput(buttons, pointer) {
+      if (this.phase === "message") {
+        if (buttons.includes("confirm") || buttons.includes("cancel") || pointer) {
+          this._advanceMessage();
+        }
+        return;
+      }
+      if (this.phase === "command") {
+        if (buttons.includes("up")) this.commandIndex = (this.commandIndex + 2) % 4;
+        if (buttons.includes("down")) this.commandIndex = (this.commandIndex + 2) % 4;
+        if (buttons.includes("left")) this.commandIndex = this.commandIndex % 2 === 1 ? this.commandIndex - 1 : this.commandIndex + 1;
+        if (buttons.includes("right")) this.commandIndex = this.commandIndex % 2 === 0 ? this.commandIndex + 1 : this.commandIndex - 1;
+        if (buttons.includes("confirm")) this._chooseCommand(this.commandIndex);
+        return;
+      }
+      if (this.phase === "submenu") {
+        const n = this.submenu.list.length;
+        if (buttons.includes("up")) this.submenu.index = (this.submenu.index - 1 + n) % n;
+        if (buttons.includes("down")) this.submenu.index = (this.submenu.index + 1) % n;
+        if (buttons.includes("cancel")) {
+          this.phase = "command";
+          this.submenu = null;
+        }
+        if (buttons.includes("confirm")) this._chooseSub();
+        return;
+      }
+    }
+    _advanceMessage() {
+      this.msgQueue.shift();
+      if (this.msgQueue.length === 0) {
+        const cb = this.afterMessage;
+        this.afterMessage = null;
+        this.phase = "command";
+        if (cb) cb();
+      }
+    }
+    _chooseCommand(idx) {
+      if (idx === 0) {
+        this._playerAttack();
+      } else if (idx === 1) {
+        this._openSpells();
+      } else if (idx === 2) {
+        this._openItems();
+      } else if (idx === 3) {
+        this._playerFlee();
+      }
+    }
+    _openSpells() {
+      const usable = this.player.spells.map((id) => getSpell(id)).filter((s) => s.battleOnly || s.kind === "heal");
+      if (usable.length === 0) {
+        this.msgQueue = [STR.menu.emptySpells];
+        this.phase = "message";
+        this.afterMessage = () => {
+          this.phase = "command";
+        };
+        return;
+      }
+      this.submenu = { type: "spell", list: usable, index: 0 };
+      this.phase = "submenu";
+    }
+    _openItems() {
+      const usable = this.player.items.map((s) => ({ ...s, def: getItem(s.id) })).filter((s) => s.def && s.def.type === "useItem");
+      if (usable.length === 0) {
+        this.msgQueue = [STR.menu.emptyItems];
+        this.phase = "message";
+        this.afterMessage = () => {
+          this.phase = "command";
+        };
+        return;
+      }
+      this.submenu = { type: "item", list: usable, index: 0 };
+      this.phase = "submenu";
+    }
+    _chooseSub() {
+      const sel = this.submenu.list[this.submenu.index];
+      if (this.submenu.type === "spell") {
+        this._castSpell(sel);
+      } else {
+        this._useItem(sel);
+      }
+    }
+    // ===== プレイヤー行動 → 敵行動 のターン処理 =====
+    _playerAttack() {
+      const p = this.player, e = this.enemy;
+      const msgs = [STR.battle.attack(p.name)];
+      if (isHit(p.agi, e.agi)) {
+        const dmg = physicalDamage(p.atk, e.def);
+        e.hp = Math.max(0, e.hp - dmg);
+        msgs.push(STR.battle.damage(e.name, dmg));
+        this.enemyHurtTimer = 18;
+        this.shakeTimer = 12;
+      } else {
+        msgs.push(STR.battle.miss(e.name));
+      }
+      this._runTurn(msgs);
+    }
+    _castSpell(spell) {
+      const p = this.player;
+      if (p.mp < spell.mp) {
+        this.submenu = null;
+        this.phase = "message";
+        this.msgQueue = [STR.battle.noMp];
+        this.afterMessage = () => {
+          this.phase = "command";
+        };
+        return;
+      }
+      p.spendMp(spell.mp);
+      this.submenu = null;
+      const msgs = [STR.battle.castSpell(p.name, spell.name)];
+      if (spell.kind === "attack") {
+        const dmg = spellDamage(spell.power, spell.variance);
+        this.enemy.hp = Math.max(0, this.enemy.hp - dmg);
+        msgs.push(STR.battle.spellDamage(this.enemy.name, dmg));
+        this.enemyHurtTimer = 18;
+        this.shakeTimer = 12;
+        this.flashTimer = 10;
+      } else if (spell.kind === "heal") {
+        const amt = healAmount(spell.power, spell.variance);
+        const healed = p.heal(amt);
+        msgs.push(STR.battle.healSpell(healed));
+      }
+      this._runTurn(msgs);
+    }
+    _useItem(slot) {
+      const p = this.player;
+      const def = slot.def;
+      this.submenu = null;
+      if (def.heal && p.hp >= p.maxHp) {
+        this.msgQueue = ["HPは まんたんだ。"];
+        this.phase = "message";
+        this.afterMessage = () => {
+          this.phase = "command";
+        };
+        return;
+      }
+      if (def.healMp && p.mp >= p.maxMp) {
+        this.msgQueue = ["MPは まんたんだ。"];
+        this.phase = "message";
+        this.afterMessage = () => {
+          this.phase = "command";
+        };
+        return;
+      }
+      const msgs = [STR.battle.useItem(p.name, def.name)];
+      if (def.heal) {
+        const h = p.heal(def.heal);
+        msgs.push(STR.battle.itemHeal(h));
+      } else if (def.healMp) {
+        const m = p.healMp(def.healMp);
+        msgs.push(`MPが ${m} かいふくした！`);
+      }
+      if (def.consumable) p.removeItem(def.id, 1);
+      this._runTurn(msgs);
+    }
+    _playerFlee() {
+      if (!this.fleeable) {
+        this.msgQueue = ["にげられない！"];
+        this.phase = "message";
+        this.afterMessage = () => {
+          this.phase = "command";
+        };
+        return;
+      }
+      if (canFlee(this.player.agi, this.enemy.agi)) {
+        this.msgQueue = [STR.battle.fledOK];
+        this.phase = "message";
+        this.result = "flee";
+        this.battleOver = true;
+        this.afterMessage = () => this._end();
+      } else {
+        this._runTurn([STR.battle.fledNG]);
+      }
+    }
+    // ターン進行：プレイヤーメッセージ → 敵生存チェック → 敵行動
+    _runTurn(playerMsgs) {
+      this.msgQueue = playerMsgs.slice();
+      this.phase = "message";
+      this.afterMessage = () => {
+        if (this.enemy.hp <= 0) {
+          this._enemyDefeated();
+          return;
+        }
+        this._enemyTurn();
+      };
+    }
+    _enemyTurn() {
+      const e = this.enemy, p = this.player;
+      const msgs = [];
+      let usedSpell = false;
+      if (e.spells && e.spells.length > 0 && Math.random() < 0.35) {
+        const sid = e.spells[Math.floor(Math.random() * e.spells.length)];
+        const sp = getSpell(sid);
+        if (sp && sp.kind === "attack") {
+          const dmg = spellDamage(sp.power, sp.variance);
+          p.takeDamage(dmg);
+          msgs.push(STR.battle.castSpell(e.name, sp.name));
+          msgs.push(STR.battle.playerHurt(dmg));
+          this.shakeTimer = 14;
+          this.flashTimer = 10;
+          usedSpell = true;
+        }
+      }
+      if (!usedSpell) {
+        msgs.push(STR.battle.enemyTurn(e.name));
+        if (isHit(e.agi, p.agi)) {
+          const dmg = Math.max(1, physicalDamage(e.atk, p.def));
+          p.takeDamage(dmg);
+          msgs.push(STR.battle.playerHurt(dmg));
+          this.shakeTimer = 14;
+        } else {
+          msgs.push("しかし こうげきを かわした！");
+        }
+      }
+      this.msgQueue = msgs;
+      this.phase = "message";
+      this.afterMessage = () => {
+        if (p.hp <= 0) {
+          this._playerDefeated();
+          return;
+        }
+        this.phase = "command";
+      };
+    }
+    _enemyDefeated() {
+      const e = this.enemy, p = this.player;
+      if (e.id === "galdis1") {
+        this.msgQueue = [STR.battle.win(e.name), STR.battle.bossPhase];
+        this.phase = "message";
+        this.afterMessage = () => {
+          this.enemy = getEnemy("galdis2");
+          this.enemyMaxHp = this.enemy.hp;
+          this.phase = "command";
+        };
+        return;
+      }
+      const msgs = [STR.battle.win(e.name)];
+      const ups = p.addExp(e.exp);
+      p.gold += e.gold;
+      msgs.push(STR.battle.expGold(e.exp, e.gold));
+      for (const u of ups) {
+        msgs.push(STR.battle.levelUp(u.lv));
+        if (u.learned) msgs.push(STR.battle.learnSpell(getSpell(u.learned).name));
+      }
+      this.result = "win";
+      this.battleOver = true;
+      this.msgQueue = msgs;
+      this.phase = "message";
+      this.afterMessage = () => this._end();
+    }
+    _playerDefeated() {
+      this.msgQueue = [STR.battle.death];
+      this.phase = "message";
+      this.result = "lose";
+      this.battleOver = true;
+      this.afterMessage = () => this._end();
+    }
+    _end() {
+      this.phase = "done";
+      if (this.result === "win" && this.opts.onWin) this.opts.onWin(this.enemy);
+      else if (this.result === "lose" && this.opts.onLose) this.opts.onLose();
+      else if (this.result === "flee" && this.opts.onFlee) this.opts.onFlee();
+    }
+    update() {
+      if (this.shakeTimer > 0) this.shakeTimer--;
+      if (this.enemyHurtTimer > 0) this.enemyHurtTimer--;
+      if (this.flashTimer > 0) this.flashTimer--;
+    }
+    // ===== 描画 =====
+    draw(ctx, W, H) {
+      const grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, this.isBoss ? "#200008" : "#101028");
+      grad.addColorStop(1, "#000");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, W, H);
+      if (this.flashTimer > 0) {
+        ctx.fillStyle = `rgba(255,80,80,${this.flashTimer / 30})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+      let ex = W / 2, ey = H * 0.36;
+      if (this.shakeTimer > 0) ex += Math.sin(this.shakeTimer * 1.5) * 6;
+      const size = this.isBoss ? 200 : 130;
+      ctx.save();
+      if (this.enemyHurtTimer > 0 && Math.floor(this.enemyHurtTimer / 3) % 2 === 0) ctx.globalAlpha = 0.4;
+      drawEnemy(ctx, this.enemy.color, ex, ey, size);
+      ctx.restore();
+      ctx.fillStyle = "#fff";
+      ctx.font = '20px "MS Gothic", monospace';
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(this.enemy.name, W / 2, 20);
+      ctx.textAlign = "left";
+      const barW = 220, barX = W / 2 - barW / 2, barY = 48;
+      ctx.fillStyle = "#400";
+      ctx.fillRect(barX, barY, barW, 10);
+      ctx.fillStyle = "#e33";
+      ctx.fillRect(barX, barY, barW * Math.max(0, this.enemy.hp) / this.enemyMaxHp, 10);
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(barX, barY, barW, 10);
+      this._drawStatus(ctx);
+      if (this.phase === "message") {
+        this._drawMessage(ctx, W, H, this.msgQueue[0] || "");
+      } else if (this.phase === "command") {
+        this._drawCommands(ctx, W, H);
+      } else if (this.phase === "submenu") {
+        this._drawSubmenu(ctx, W, H);
+      }
+    }
+    _drawStatus(ctx) {
+      const x = 12, y = 12, w = 180, h = 92;
+      drawWindow(ctx, x, y, w, h);
+      const p = this.player;
+      ctx.fillStyle = "#fff";
+      ctx.font = '16px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(p.name, x + 12, y + 10);
+      ctx.fillStyle = hpColor(p.hp, p.maxHp);
+      ctx.fillText(`HP ${p.hp}/${p.maxHp}`, x + 12, y + 34);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(`MP ${p.mp}/${p.maxMp}`, x + 12, y + 56);
+      ctx.fillText(`Lv ${p.lv}`, x + 120, y + 10);
+    }
+    _drawMessage(ctx, W, H, text) {
+      const x = 16, y = H - 130, w = W - 32, h = 114;
+      const padX = 16, innerW = w - padX * 2;
+      drawWindow(ctx, x, y, w, h);
+      ctx.fillStyle = "#fff";
+      ctx.font = '20px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      const lines = [];
+      for (const para of String(text).split("\n")) {
+        let line = "", lw = 0;
+        for (const c of para) {
+          const cw = ctx.measureText(c).width;
+          if (lw + cw > innerW && line.length > 0) {
+            lines.push(line);
+            line = c;
+            lw = cw;
+          } else {
+            line += c;
+            lw += cw;
+          }
+        }
+        lines.push(line);
+      }
+      let yy = y + 16;
+      for (const l of lines) {
+        ctx.fillText(l, x + padX, yy);
+        yy += 26;
+      }
+      if (Math.floor(Date.now() / 400) % 2 === 0) {
+        ctx.fillStyle = "#e0d040";
+        ctx.fillText("▼", x + w - 32, y + h - 28);
+      }
+    }
+    _drawCommands(ctx, W, H) {
+      const x = 16, y = H - 130, w = 260, h = 114;
+      drawWindow(ctx, x, y, w, h);
+      ctx.font = '20px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      const positions = [[0, 0], [1, 0], [0, 1], [1, 1]];
+      this.commands.forEach((cmd, i) => {
+        const [cx, cy] = positions[i];
+        const ox = x + 20 + cx * 120, oy = y + 22 + cy * 42;
+        if (i === this.commandIndex) {
+          ctx.fillStyle = "#e0d040";
+          ctx.fillText("▶", ox - 18, oy);
+        }
+        ctx.fillStyle = "#fff";
+        ctx.fillText(cmd, ox, oy);
+      });
+    }
+    _drawSubmenu(ctx, W, H) {
+      const list = this.submenu.list;
+      const x = 16, y = H - 130 - (list.length * 26 + 20), w = 300, h = list.length * 26 + 20;
+      drawWindow(ctx, x, y, Math.max(w, 240), h + 8);
+      ctx.font = '18px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      list.forEach((it, i) => {
+        const oy = y + 12 + i * 26;
+        const label = this.submenu.type === "spell" ? `${it.name}  MP${it.mp}` : `${it.def.name}  x${it.qty}`;
+        if (i === this.submenu.index) {
+          ctx.fillStyle = "#e0d040";
+          ctx.fillText("▶", x + 8, oy);
+        }
+        ctx.fillStyle = "#fff";
+        ctx.fillText(label, x + 30, oy);
+      });
+    }
+  };
+
+  // src/ui/menu.js
+  var FieldMenu = class {
+    constructor(game) {
+      this.game = game;
+      this.open = false;
+      this.index = 0;
+      this.commands = [
+        STR.menu.talk,
+        STR.menu.status,
+        STR.menu.items,
+        STR.menu.spells,
+        STR.menu.equip,
+        STR.menu.search,
+        STR.menu.save,
+        STR.menu.fileOut,
+        STR.menu.fileIn,
+        STR.menu.close
+      ];
+      this.sub = null;
+    }
+    show() {
+      this.open = true;
+      this.index = 0;
+      this.sub = null;
+    }
+    close() {
+      this.open = false;
+      this.sub = null;
+    }
+    // メインコマンドの描画レイアウト（draw と一致させる）
+    _mainLayout(W) {
+      const mw = 150, mh = this.commands.length * 28 + 20;
+      const mx = W - mw - 12, my = 12;
+      return { mx, my, mw, mh, itemH: 28, top: my + 12 };
+    }
+    // リストサブの描画レイアウト
+    _listLayout(W, H, n) {
+      const w = 320, h = n * 24 + 30, x = (W - w) / 2, y = (H - h) / 2;
+      return { x, y, w, h, itemH: 24, top: y + 14 };
+    }
+    handleInput(buttons, pointer) {
+      if (this.sub) {
+        this._subInput(buttons, pointer);
+        return;
+      }
+      if (buttons.includes("up")) this.index = (this.index - 1 + this.commands.length) % this.commands.length;
+      if (buttons.includes("down")) this.index = (this.index + 1) % this.commands.length;
+      if (buttons.includes("cancel") || buttons.includes("menu")) {
+        this.close();
+        return;
+      }
+      if (pointer) {
+        const W = this.game.W, H = this.game.H;
+        const L = this._mainLayout(W);
+        if (pointer.x >= L.mx && pointer.x <= L.mx + L.mw) {
+          const idx = Math.floor((pointer.y - L.top + 6) / L.itemH);
+          if (idx >= 0 && idx < this.commands.length) {
+            this.index = idx;
+            this._choose(idx);
+            return;
+          }
+        }
+        this.close();
+        return;
+      }
+      if (buttons.includes("confirm")) this._choose(this.index);
+    }
+    _choose(i) {
+      const g = this.game;
+      switch (i) {
+        case 0:
+          this.close();
+          g.tryTalk();
+          break;
+        case 1:
+          this.sub = { mode: "status" };
+          break;
+        case 2:
+          this._openItems();
+          break;
+        case 3:
+          this._openSpells();
+          break;
+        case 4:
+          this._openEquip();
+          break;
+        case 5:
+          this.close();
+          g.trySearch();
+          break;
+        case 6:
+          this.close();
+          g.trySaveAtMenu();
+          break;
+        case 7:
+          this.close();
+          g.exportSave();
+          break;
+        case 8:
+          this.close();
+          g.importSave();
+          break;
+        case 9:
+          this.close();
+          break;
+      }
+    }
+    _openItems() {
+      const list = this.game.player.items.map((s) => ({ ...s, def: getItem(s.id) })).filter((s) => s.def);
+      if (list.length === 0) {
+        this.game.msg.show([STR.menu.emptyItems]);
+        this.close();
+        return;
+      }
+      this.sub = { mode: "items", list, index: 0 };
+    }
+    _openSpells() {
+      const list = this.game.player.spells.map((id) => getSpell(id)).filter(Boolean);
+      if (list.length === 0) {
+        this.game.msg.show([STR.menu.emptySpells]);
+        this.close();
+        return;
+      }
+      this.sub = { mode: "spells", list, index: 0 };
+    }
+    _openEquip() {
+      const list = this.game.player.items.map((s) => ({ ...s, def: getItem(s.id) })).filter((s) => s.def && ["weapon", "armor", "shield"].includes(s.def.type));
+      if (list.length === 0) {
+        this.game.msg.show(["そうびできる ものが ない。"]);
+        this.close();
+        return;
+      }
+      this.sub = { mode: "equip", list, index: 0 };
+    }
+    _subInput(buttons, pointer) {
+      const s = this.sub;
+      if (s.mode === "status") {
+        if (buttons.includes("cancel") || buttons.includes("confirm") || pointer) this.sub = null;
+        return;
+      }
+      const n = s.list.length;
+      if (buttons.includes("up")) s.index = (s.index - 1 + n) % n;
+      if (buttons.includes("down")) s.index = (s.index + 1) % n;
+      if (buttons.includes("cancel")) {
+        this.sub = null;
+        return;
+      }
+      if (pointer) {
+        const L = this._listLayout(this.game.W, this.game.H, n);
+        if (pointer.x >= L.x && pointer.x <= L.x + L.w && pointer.y >= L.y && pointer.y <= L.y + L.h) {
+          const idx = Math.floor((pointer.y - L.top + 4) / L.itemH);
+          if (idx >= 0 && idx < n) {
+            s.index = idx;
+            this._subChoose();
+            return;
+          }
+        }
+        this.sub = null;
+        return;
+      }
+      if (buttons.includes("confirm")) this._subChoose();
+    }
+    _subChoose() {
+      const g = this.game, p = g.player, s = this.sub;
+      const sel = s.list[s.index];
+      if (s.mode === "items") {
+        const def = sel.def;
+        if (def.type === "useItem") {
+          if (def.heal) {
+            if (p.hp >= p.maxHp) {
+              g.msg.show(["HPは まんたんだ。"]);
+            } else {
+              const h = p.heal(def.heal);
+              if (def.consumable) p.removeItem(def.id, 1);
+              g.msg.show([STR.menu.usedItem(def.name, h)]);
+            }
+          } else if (def.healMp) {
+            if (p.mp >= p.maxMp) {
+              g.msg.show(["MPは まんたんだ。"]);
+            } else {
+              p.healMp(def.healMp);
+              if (def.consumable) p.removeItem(def.id, 1);
+              g.msg.show([`${def.name}を つかった。
+MPが ${def.healMp} かいふくした！`]);
+            }
+          }
+          this.close();
+        } else if (["weapon", "armor", "shield"].includes(def.type)) {
+          if (p.isEquipped(def.id)) {
+            p.unequip(def.id);
+            g.msg.show([STR.menu.unequipped(def.name)]);
+          } else {
+            p.equip(def.id);
+            g.msg.show([STR.menu.equipped(def.name)]);
+          }
+          this.close();
+        } else {
+          g.msg.show([`${def.name}：${def.desc || ""}`]);
+          this.close();
+        }
+      } else if (s.mode === "equip") {
+        if (p.isEquipped(sel.def.id)) {
+          p.unequip(sel.def.id);
+          g.msg.show([STR.menu.unequipped(sel.def.name)]);
+        } else {
+          p.equip(sel.def.id);
+          g.msg.show([STR.menu.equipped(sel.def.name)]);
+        }
+        this.close();
+      } else if (s.mode === "spells") {
+        const sp = sel;
+        g.castFieldSpell(sp);
+        this.close();
+      }
+    }
+    draw(ctx, W, H) {
+      if (!this.open) return;
+      const mw = 150, mh = this.commands.length * 28 + 20;
+      const mx = W - mw - 12, my = 12;
+      drawWindow(ctx, mx, my, mw, mh);
+      ctx.font = '18px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      this.commands.forEach((c, i) => {
+        const oy = my + 12 + i * 28;
+        if (i === this.index && !this.sub) {
+          ctx.fillStyle = "#e0d040";
+          ctx.fillText("▶", mx + 8, oy);
+        }
+        ctx.fillStyle = "#fff";
+        ctx.fillText(c, mx + 30, oy);
+      });
+      if (this.sub) this._drawSub(ctx, W, H);
+    }
+    _drawSub(ctx, W, H) {
+      const s = this.sub, p = this.game.player;
+      if (s.mode === "status") {
+        const w2 = 300, h2 = 250, x2 = (W - w2) / 2, y2 = (H - h2) / 2;
+        drawWindow(ctx, x2, y2, w2, h2);
+        ctx.fillStyle = "#fff";
+        ctx.font = '18px "MS Gothic", monospace';
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        const lines = [
+          `なまえ  ${p.name}`,
+          `レベル  ${p.lv}`,
+          `HP     ${p.hp}/${p.maxHp}`,
+          `MP     ${p.mp}/${p.maxMp}`,
+          `ちから  ${p.str}  (こうげき ${p.atk})`,
+          `すばやさ ${p.agi}  (しゅび ${p.def})`,
+          `ゴールド ${p.gold} G`,
+          `けいけんち ${p.exp}`,
+          `つぎのLvまで ${p.expToNext()}`,
+          `ぶき  ${p.weapon ? getItem(p.weapon).name : "なし"}`,
+          `よろい ${p.armor ? getItem(p.armor).name : "なし"}`,
+          `たて  ${p.shield ? getItem(p.shield).name : "なし"}`
+        ];
+        lines.forEach((l, i) => {
+          if (l.startsWith("HP")) ctx.fillStyle = hpColor(p.hp, p.maxHp);
+          else ctx.fillStyle = "#fff";
+          ctx.fillText(l, x2 + 16, y2 + 14 + i * 19);
+        });
+        ctx.fillStyle = "#fff";
+        return;
+      }
+      const w = 320, h = s.list.length * 24 + 30, x = (W - w) / 2, y = (H - h) / 2;
+      drawWindow(ctx, x, y, w, h);
+      ctx.font = '17px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      s.list.forEach((it, i) => {
+        const oy = y + 14 + i * 24;
+        let label;
+        if (s.mode === "spells") label = `${it.name}  MP${it.mp}`;
+        else label = `${it.def.name}${it.def.consumable ? "  x" + it.qty : ""}`;
+        if (i === s.index) {
+          ctx.fillStyle = "#e0d040";
+          ctx.fillText("▶", x + 8, oy);
+        }
+        ctx.fillStyle = "#fff";
+        ctx.fillText(label, x + 30, oy);
+        if (s.mode !== "spells" && it.def && p.isEquipped(it.def.id)) {
+          const lw = ctx.measureText(label).width;
+          ctx.fillStyle = "#4ad04a";
+          ctx.fillText("→", x + 30 + lw + 8, oy);
+        }
+      });
+    }
+  };
+
+  // src/ui/shop.js
+  var SHOP_TYPE = {
+    weapon: "townWeapon",
+    armor: "townArmor",
+    item: "townItem",
+    swampWeapon: "swampWeapon",
+    swampArmor: "swampArmor",
+    swampItem: "swampItem"
+  };
+  function sellPrice(def) {
+    return Math.floor((def.price || 0) / 2);
+  }
+  var Shop = class {
+    constructor(game, type) {
+      this.game = game;
+      this.type = type;
+      this.stock = SHOP_STOCK[SHOP_TYPE[type]] || [];
+      this.mode = "buy";
+      this.index = 0;
+      this.open = true;
+      this.busy = false;
+      this.message = STR.shop.welcome;
+      this.msgTimer = 0;
+    }
+    setMessage(m) {
+      this.message = m;
+      this.msgTimer = 120;
+    }
+    // 売却可能な所持品リスト（消耗品・装備で price>0 のもの）
+    _sellList() {
+      return this.game.player.items.map((s) => ({ ...s, def: getItem(s.id) })).filter((s) => s.def && s.def.type !== "key" && (s.def.price || 0) > 0);
+    }
+    _rows() {
+      const list = this.mode === "buy" ? this.stock : this._sellList();
+      return list.length;
+    }
+    handleInput(buttons, pointer) {
+      if (this.busy) return;
+      if (buttons.includes("cancel")) {
+        this.open = false;
+        return;
+      }
+      const listLen = this._rows();
+      const toggleIdx = listLen;
+      const leaveIdx = listLen + 1;
+      const n = listLen + 2;
+      if (buttons.includes("up")) this.index = (this.index - 1 + n) % n;
+      if (buttons.includes("down")) this.index = (this.index + 1) % n;
+      if (buttons.includes("left") || buttons.includes("right")) this._toggleMode();
+      if (pointer) {
+        const W = this.game.W;
+        const w = 380, x = (W - w) / 2, y = 50;
+        const idx = Math.floor((pointer.y - (y + 16) + 6) / 30);
+        if (pointer.x >= x && pointer.x <= x + w && idx >= 0 && idx < n) {
+          this.index = idx;
+          this._activate(toggleIdx, leaveIdx);
+        }
+        return;
+      }
+      if (buttons.includes("confirm")) this._activate(toggleIdx, leaveIdx);
+    }
+    _activate(toggleIdx, leaveIdx) {
+      if (this.index === toggleIdx) {
+        this._toggleMode();
+        return;
+      }
+      if (this.index === leaveIdx) {
+        this.open = false;
+        return;
+      }
+      if (this.mode === "buy") this._buy(this.stock[this.index]);
+      else this._sell(this._sellList()[this.index]);
+    }
+    _toggleMode() {
+      this.mode = this.mode === "buy" ? "sell" : "buy";
+      this.index = 0;
+      this.setMessage(this.mode === "buy" ? STR.shop.whatBuy : STR.shop.sellPrompt);
+    }
+    _buy(id) {
+      const p = this.game.player, def = getItem(id);
+      if (!def) return;
+      if (p.gold < def.price) {
+        this.setMessage(STR.shop.notEnough);
+        return;
+      }
+      p.gold -= def.price;
+      p.addItem(id, 1);
+      if (["weapon", "armor", "shield"].includes(def.type)) {
+        this.busy = true;
+        this.game.msg.showChoice(`${def.name}を かいました！
+そうびしますか？`, [STR.common.yes, STR.common.no], (sel) => {
+          if (sel === 0) {
+            p.equip(def.id);
+            this.setMessage(STR.menu.equipped(def.name));
+          } else this.setMessage(STR.shop.bought(def.name));
+          this.busy = false;
+        });
+        return;
+      }
+      this.setMessage(STR.shop.bought(def.name));
+    }
+    _sell(slot) {
+      if (!slot) return;
+      const p = this.game.player, def = slot.def;
+      const gain = sellPrice(def);
+      this.busy = true;
+      this.game.msg.showChoice(`${def.name}を ${gain}ゴールドで うりますか？`, [STR.common.yes, STR.common.no], (sel) => {
+        if (sel === 0) {
+          if (p.weapon === def.id) p.weapon = null;
+          if (p.armor === def.id) p.armor = null;
+          if (p.shield === def.id) p.shield = null;
+          p.removeItem(def.id, 1);
+          p.gold += gain;
+          this.setMessage(STR.shop.sold(def.name, gain));
+          if (this.index >= this._rows() && this.index > 0) this.index--;
+        } else {
+          this.setMessage(STR.shop.sellPrompt);
+        }
+        this.busy = false;
+      });
+    }
+    update() {
+      if (this.msgTimer > 0) this.msgTimer--;
+    }
+    draw(ctx, W, H) {
+      if (!this.open) return;
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      ctx.fillRect(0, 0, W, H);
+      const list = this.mode === "buy" ? this.stock : this._sellList();
+      const w = 380, x = (W - w) / 2, y = 50;
+      const rows = list.length + 2;
+      const h = rows * 30 + 30;
+      drawWindow(ctx, x, y, w, h);
+      ctx.font = '18px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      list.forEach((entry, i) => {
+        const def = this.mode === "buy" ? getItem(entry) : entry.def;
+        const oy = y + 16 + i * 30;
+        if (i === this.index) {
+          ctx.fillStyle = "#e0d040";
+          ctx.fillText("▶", x + 10, oy);
+        }
+        ctx.fillStyle = "#fff";
+        const name = this.mode === "sell" && entry.def.consumable ? `${def.name} x${entry.qty}` : def.name;
+        ctx.fillText(name, x + 36, oy);
+        const price = this.mode === "buy" ? def.price : sellPrice(def);
+        ctx.textAlign = "right";
+        ctx.fillText(`${price} G`, x + w - 16, oy);
+        ctx.textAlign = "left";
+      });
+      const tIdx = list.length;
+      const tOy = y + 16 + tIdx * 30;
+      if (this.index === tIdx) {
+        ctx.fillStyle = "#e0d040";
+        ctx.fillText("▶", x + 10, tOy);
+      }
+      ctx.fillStyle = "#9cf";
+      ctx.fillText(this.mode === "buy" ? `▷ ${STR.shop.sell}に きりかえ` : `▷ ${STR.shop.buy}に きりかえ`, x + 36, tOy);
+      const lIdx = list.length + 1;
+      const lOy = y + 16 + lIdx * 30;
+      if (this.index === lIdx) {
+        ctx.fillStyle = "#e0d040";
+        ctx.fillText("▶", x + 10, lOy);
+      }
+      ctx.fillStyle = "#fff";
+      ctx.fillText(STR.shop.leave, x + 36, lOy);
+      drawWindow(ctx, x, y + h + 8, w, 88);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(`しょじ ${this.game.player.gold} G`, x + 16, y + h + 18);
+      const lines = this.message.split("\n");
+      lines.forEach((l, i) => ctx.fillText(l, x + 16, y + h + 44 + i * 22));
+      if (this.mode === "buy" && this.index < this.stock.length) {
+        const def = getItem(this.stock[this.index]);
+        ctx.fillStyle = "#aac";
+        ctx.font = '15px "MS Gothic", monospace';
+        ctx.fillText(def.desc || "", x + 180, y + h + 18);
+      }
+    }
+  };
+  var Inn = class {
+    constructor(game, place) {
+      this.game = game;
+      this.price = INN_PRICE[place] || 6;
+      this.open = true;
+      this.done = false;
+    }
+    start() {
+      const g = this.game;
+      g.msg.showChoice(STR.shop.innPrompt(this.price), [STR.common.yes, STR.common.no], (sel) => {
+        if (sel === 0) {
+          if (g.player.gold < this.price) {
+            g.msg.show([STR.shop.innNoGold]);
+            this.open = false;
+            return;
+          }
+          g.player.gold -= this.price;
+          g.msg.show([STR.shop.innRest], () => {
+            g.player.fullHeal();
+            this.open = false;
+          });
+        } else {
+          this.open = false;
+        }
+      });
+    }
+  };
+
+  // src/save/saveManager.js
+  var KEY = "ryuou_densetsu_save";
+  var LEGACY_KEY = "ryuou_densetsu_save_v1";
+  var SAVE_VERSION = 3;
+  var TTL_MS = 3 * 24 * 60 * 60 * 1e3;
+  var COOKIE_MAX_AGE = 259200;
+  var COOKIE_LIMIT = 3500;
+  function cookieGet(name) {
+    try {
+      const m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+      return m ? decodeURIComponent(m[1]) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function cookieSet(name, value) {
+    try {
+      const enc = encodeURIComponent(value);
+      if (enc.length > COOKIE_LIMIT) return false;
+      document.cookie = name + "=" + enc + "; max-age=" + COOKIE_MAX_AGE + "; path=/; SameSite=Lax";
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  function cookieErase(name) {
+    try {
+      document.cookie = name + "=; max-age=0; path=/; SameSite=Lax";
+    } catch (e) {
+    }
+  }
+  function lsGet(name) {
+    try {
+      return localStorage.getItem(name);
+    } catch (e) {
+      return null;
+    }
+  }
+  function lsSet(name, value) {
+    try {
+      localStorage.setItem(name, value);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  function lsRemove(name) {
+    try {
+      localStorage.removeItem(name);
+    } catch (e) {
+    }
+  }
+  function parseValid(raw) {
+    if (!raw) return null;
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+    if (!data || !data.player) return null;
+    if (Number.isFinite(data.expiresAt) && Date.now() > data.expiresAt) return null;
+    return data;
+  }
+  function readRawValid() {
+    const ls = lsGet(KEY) || lsGet(LEGACY_KEY);
+    if (parseValid(ls)) return { raw: ls, from: "ls" };
+    const ck = cookieGet(KEY);
+    if (parseValid(ck)) return { raw: ck, from: "cookie" };
+    return null;
+  }
+  var SaveManager = {
+    // ===== 期限内のセーブが いずれかのバックエンドに あるか =====
+    hasSave() {
+      return !!readRawValid();
+    },
+    // ===== セーブ本体(JSON文字列)を生成 =====
+    // player が toJSON を持つ Player か、既にプレーンな state でも受ける。
+    buildPayload(player, openedChests) {
+      const savedAt = Date.now();
+      return {
+        version: SAVE_VERSION,
+        savedAt,
+        expiresAt: savedAt + TTL_MS,
+        player: player && typeof player.toJSON === "function" ? player.toJSON() : player,
+        openedChests: Array.from(openedChests || [])
+      };
+    },
+    // ===== 保存：localStorage と Cookie の両方へ =====
+    save(player, openedChests) {
+      try {
+        const data = this.buildPayload(player, openedChests);
+        const json = JSON.stringify(data);
+        const okLs = lsSet(KEY, json);
+        cookieSet(KEY, json);
+        return okLs || this.hasSave();
+      } catch (e) {
+        console.error("save failed", e);
+        return false;
+      }
+    },
+    // ===== 内部：既存のpayload文字列をそのまま両バックエンドへ書き戻す(有効期限維持) =====
+    _writeRaw(json) {
+      lsSet(KEY, json);
+      cookieSet(KEY, json);
+    },
+    // ===== ロード：localStorage→Cookie、期限検証、復元、両者へ同期 =====
+    load() {
+      try {
+        const hit = readRawValid();
+        if (!hit) {
+          const stale = lsGet(KEY) || cookieGet(KEY);
+          if (stale) this.erase();
+          return null;
+        }
+        const data = JSON.parse(hit.raw);
+        const player = Player.fromJSON(data.player);
+        const openedChests = new Set(Array.isArray(data.openedChests) ? data.openedChests : []);
+        this._writeRaw(hit.raw);
+        return { player, openedChests };
+      } catch (e) {
+        console.error("load failed / corrupt save", e);
+        return null;
+      }
+    },
+    // ===== 外部JSON文字列からの復元(インポート用)。保存もする。 =====
+    importFromJSON(text) {
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        return null;
+      }
+      if (!data || !data.player) return null;
+      try {
+        const player = Player.fromJSON(data.player);
+        const openedChests = new Set(Array.isArray(data.openedChests) ? data.openedChests : []);
+        this.save(player, openedChests);
+        return { player, openedChests };
+      } catch (e) {
+        return null;
+      }
+    },
+    // ===== エクスポート用JSON文字列を生成(セーブ不要・現プレイ状態でも可) =====
+    exportToJSON(player, openedChests) {
+      try {
+        return JSON.stringify(this.buildPayload(player, openedChests));
+      } catch (e) {
+        return null;
+      }
+    },
+    erase() {
+      lsRemove(KEY);
+      lsRemove(LEGACY_KEY);
+      cookieErase(KEY);
+    }
+  };
+
+  // src/game.js
+  var MOVE_FRAMES = 9;
+  var Game = class {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext("2d");
+      this.ctx.imageSmoothingEnabled = false;
+      this.W = canvas.width;
+      this.H = canvas.height;
+      this.input = new Input(canvas);
+      this.sm = new StateMachine(STATE.TITLE);
+      this.msg = new MessageWindow();
+      this.menu = new FieldMenu(this);
+      this.player = null;
+      this.openedChests = /* @__PURE__ */ new Set();
+      this.battle = null;
+      this.shop = null;
+      this.inn = null;
+      this.move = null;
+      this.stepCount = 0;
+      this.encounterCooldown = 0;
+      this.titleIndex = 0;
+      this.nameInput = "";
+      this.frame = 0;
+      this.endingTimer = 0;
+      this.endingPage = 0;
+      this.flashFx = 0;
+      this._savedTipShown = false;
+    }
+    // ===== 状態遷移ヘルパ =====
+    startNewGame() {
+      this.player = new Player("ユウシャ");
+      this.openedChests = /* @__PURE__ */ new Set();
+      this.player.pos = { map: "castle", x: 6, y: 11, dir: "up" };
+      this.sm.set(STATE.NAME);
+      this.nameInput = "";
+    }
+    finishNaming(name) {
+      if (name) this.player.name = name;
+      this.sm.set(STATE.FIELD);
+      this.msg.show([STR.title.welcome(this.player.name)]);
+    }
+    continueGame() {
+      const data = SaveManager.load();
+      if (!data) {
+        this.msg.show([STR.title.noSave]);
+        return;
+      }
+      this.player = data.player;
+      this.openedChests = data.openedChests;
+      this.sm.set(STATE.FIELD);
+      this.msg.show([`${this.player.name}の
+ ぼうけんを さいかいする！`]);
+    }
+    saveGame() {
+      SaveManager.save(this.player, this.openedChests);
+    }
+    trySaveAtMenu() {
+      this.msg.showChoice(STR.priest.save, [STR.common.yes, STR.common.no], (sel) => {
+        if (sel === 0) {
+          this.saveGame();
+          const pages = [STR.priest.saved];
+          if (!this._savedTipShown) {
+            pages.push(STR.priest.savedTip);
+            this._savedTipShown = true;
+          }
+          this.msg.show(pages);
+        }
+      });
+    }
+    // ===== 「ぼうけんのしょ」ファイル書き出し(エクスポート) =====
+    // 現在のプレイ状態(セーブが無くても可)をJSONにしてBlobダウンロード。
+    exportSave() {
+      let player = this.player, chests = this.openedChests;
+      if (!player) {
+        const data = SaveManager.load();
+        if (data) {
+          player = data.player;
+          chests = data.openedChests;
+        }
+      }
+      const onTitle = this.sm.state === STATE.TITLE;
+      if (!player) {
+        return false;
+      }
+      if (onTitle) {
+        this.player = player;
+        this.openedChests = chests || /* @__PURE__ */ new Set();
+        this.sm.set(STATE.EVENT);
+      }
+      try {
+        const json = SaveManager.exportToJSON(player, chests);
+        if (!json) throw new Error("export build failed");
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "ryuou-bouken.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1e3);
+        this.msg.show([STR.title.exported]);
+        return true;
+      } catch (e) {
+        console.error("export failed", e);
+        this.msg.show([STR.title.corrupt]);
+        return false;
+      }
+    }
+    // ===== 「ぼうけんのしょ」ファイル読み込み(インポート) =====
+    // 隠しfile inputを起動し、選択ファイルをFileReaderで読んでロード再開。
+    importSave() {
+      try {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "application/json";
+        input.style.display = "none";
+        input.addEventListener("change", () => {
+          const file = input.files && input.files[0];
+          if (!file) {
+            if (input.parentNode) document.body.removeChild(input);
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = () => {
+            this._applyImportedText(String(reader.result || ""));
+            if (input.parentNode) document.body.removeChild(input);
+          };
+          reader.onerror = () => {
+            this._showCorrupt();
+            if (input.parentNode) document.body.removeChild(input);
+          };
+          reader.readAsText(file);
+        });
+        document.body.appendChild(input);
+        input.click();
+      } catch (e) {
+        console.error("import failed", e);
+        this._showCorrupt();
+      }
+    }
+    // インポートしたテキストをsaveManager経由で復元しゲーム再開。不正なら安全に失敗。
+    _applyImportedText(text) {
+      const data = SaveManager.importFromJSON(text);
+      if (!data) {
+        this._showCorrupt();
+        return false;
+      }
+      this.player = data.player;
+      this.openedChests = data.openedChests;
+      this.sm.set(STATE.FIELD);
+      this.msg.show([STR.title.importedTitle(this.player.name)]);
+      return true;
+    }
+    // 壊れたファイルの安全な失敗表示。プレイ中ならEVENTで、タイトルではタイトルへ戻す。
+    _showCorrupt() {
+      if (this.player) {
+        this.sm.set(STATE.EVENT);
+        this.msg.show([STR.title.corrupt]);
+      } else {
+        this.sm.set(STATE.TITLE);
+        this.titleIndex = 0;
+        try {
+          if (typeof alert === "function") alert("ぼうけんのしょが こわれています");
+        } catch (e) {
+        }
+      }
+    }
+    // ===== 移動 =====
+    facingTile() {
+      const p = this.player.pos;
+      let dx = 0, dy = 0;
+      if (p.dir === "up") dy = -1;
+      else if (p.dir === "down") dy = 1;
+      else if (p.dir === "left") dx = -1;
+      else dx = 1;
+      return { x: p.x + dx, y: p.y + dy };
+    }
+    tryMove(dir) {
+      if (this.move) return;
+      const p = this.player.pos;
+      p.dir = dir;
+      let dx = 0, dy = 0;
+      if (dir === "up") dy = -1;
+      else if (dir === "down") dy = 1;
+      else if (dir === "left") dx = -1;
+      else dx = 1;
+      const nx = p.x + dx, ny = p.y + dy;
+      if (npcAt(p.map, nx, ny, this.player)) return;
+      if (!isPassable(p.map, nx, ny)) return;
+      this.move = { fromX: p.x, fromY: p.y, toX: nx, toY: ny, progress: 0 };
+    }
+    finishMove() {
+      const p = this.player.pos;
+      p.x = this.move.toX;
+      p.y = this.move.toY;
+      this.move = null;
+      this.stepCount++;
+      const key = `${p.map},${p.x},${p.y}`;
+      const warp = WARPS[key];
+      if (warp) {
+        this._handleWarp(warp);
+        return;
+      }
+      const m = getMap(p.map);
+      if (m.encounter && this.encounterCooldown <= 0) {
+        const ch = tileAt(p.map, p.x, p.y);
+        let rate = 0.1;
+        if (m.encounter === "cave") rate = 0.13;
+        if (m.encounter === "darkCastle") rate = 0.16;
+        if (ch === "s" || ch === "T") rate += 0.03;
+        if (Math.random() < rate) {
+          this._startEncounter();
+        }
+      }
+      if (this.encounterCooldown > 0) this.encounterCooldown--;
+    }
+    _handleWarp(warp) {
+      if (warp.requireKey && !this.player.hasItem(warp.requireKey)) {
+        this.msg.show([STR.common.needKey]);
+        this._pushBackFromWarp();
+        this.sm.set(STATE.EVENT);
+        return;
+      }
+      if (warp.requireFlag && !this.player.flags[warp.requireFlag]) {
+        this.msg.show(["まだ ここへは すすめない。\n姫を すくわねば…"]);
+        this._pushBackFromWarp();
+        this.sm.set(STATE.EVENT);
+        return;
+      }
+      if (warp.requireKey && this.player.hasItem(warp.requireKey)) {
+        const flagName = "_unlocked_" + warp.requireKey;
+        if (!this.player.flags[flagName]) {
+          this.player.flags[flagName] = true;
+          this.sm.set(STATE.EVENT);
+          this.msg.show([STR.common.unlock], () => {
+            this.warpTo(warp.map, warp.x, warp.y, warp.dir);
+            this.encounterCooldown = 3;
+          });
+          return;
+        }
+      }
+      this.warpTo(warp.map, warp.x, warp.y, warp.dir);
+      this.encounterCooldown = 3;
+    }
+    // 奥扉に乗ったが進めないとき、入口側（直前の位置）へ1マス押し戻す
+    _pushBackFromWarp() {
+      const p = this.player.pos;
+      if (this.move) {
+        p.x = this.move.fromX;
+        p.y = this.move.fromY;
+      } else {
+        let dx = 0, dy = 0;
+        if (p.dir === "up") dy = 1;
+        else if (p.dir === "down") dy = -1;
+        else if (p.dir === "left") dx = 1;
+        else dx = -1;
+        const bx = p.x + dx, by = p.y + dy;
+        if (isPassable(p.map, bx, by) && !npcAt(p.map, bx, by, this.player)) {
+          p.x = bx;
+          p.y = by;
+        }
+      }
+      this.move = null;
+    }
+    warpTo(map, x, y, dir) {
+      this.player.pos = { map, x, y, dir: dir || this.player.pos.dir };
+      this.flashFx = 12;
+    }
+    // ===== 調べる/話す =====
+    tryTalk() {
+      const t = this.facingTile();
+      const npc = npcAt(this.player.pos.map, t.x, t.y, this.player);
+      if (npc) {
+        this.sm.set(STATE.EVENT);
+        npc.action(this);
+      } else this.msg.show([STR.menu.nothing]);
+    }
+    trySearch() {
+      const p = this.player.pos;
+      const key = `${p.map},${p.x},${p.y}`;
+      const t = this.facingTile();
+      const fkey = `${p.map},${t.x},${t.y}`;
+      let chestKey = null;
+      if (CHESTS[key] && !this.openedChests.has(key)) chestKey = key;
+      else if (CHESTS[fkey] && !this.openedChests.has(fkey)) chestKey = fkey;
+      if (!chestKey && tileAt(p.map, t.x, t.y) === "C") {
+      }
+      if (chestKey) {
+        const c = CHESTS[chestKey];
+        this.openedChests.add(chestKey);
+        if (c.gold) {
+          this.player.gold += c.gold;
+          this.msg.show([STR.menu.foundGold(c.gold)]);
+        } else if (c.item) {
+          this.player.addItem(c.item);
+          this.msg.show([STR.menu.foundItem(getItem(c.item).name)]);
+        }
+        return;
+      }
+      this.msg.show([STR.menu.nothingHere]);
+    }
+    // ===== 店 =====
+    openShop(type) {
+      this.shop = new Shop(this, type);
+      this.sm.set(STATE.SHOP);
+    }
+    openInn(place) {
+      this.inn = new Inn(this, place);
+      this.sm.set(STATE.EVENT);
+      this.inn.start();
+    }
+    // ===== フィールド呪文 =====
+    castFieldSpell(sp) {
+      const p = this.player;
+      if (p.mp < sp.mp) {
+        this.msg.show([STR.battle.noMp]);
+        return;
+      }
+      if (sp.kind === "heal") {
+        if (p.hp >= p.maxHp) {
+          this.msg.show(["HPは まんたんだ。"]);
+          return;
+        }
+        p.mp -= sp.mp;
+        const amt = p.heal(sp.power);
+        this.msg.show([STR.battle.castSpell(p.name, sp.name), STR.battle.healSpell(amt)]);
+      } else if (sp.kind === "teleport") {
+        p.mp -= sp.mp;
+        this.msg.show([STR.battle.castSpell(p.name, sp.name)], () => this.warpTo("town", 7, 5, "down"));
+      } else if (sp.kind === "escape") {
+        p.mp -= sp.mp;
+        const map = p.pos.map;
+        const exits = { cave: ["field", 5, 16], caveInner: ["cave", 1, 1], darkCastle: ["field", 16, 9] };
+        const ex = exits[map];
+        if (ex) this.msg.show([STR.battle.castSpell(p.name, sp.name)], () => this.warpTo(ex[0], ex[1], ex[2], "down"));
+        else this.msg.show([STR.menu.cantUseHere]);
+      } else {
+        this.msg.show([STR.menu.cantUseHere]);
+      }
+    }
+    // ===== 戦闘 =====
+    _startEncounter() {
+      const eid = rollEncounter(getMap(this.player.pos.map).encounter);
+      if (!eid) return;
+      this._beginBattle(eid);
+    }
+    _beginBattle(eid, isGaldis = false) {
+      this.flashFx = 16;
+      this.battle = new Battle(this, eid, {
+        onWin: (enemy) => this._onBattleWin(enemy),
+        onLose: () => this._onBattleLose(),
+        onFlee: () => {
+          this.sm.set(STATE.FIELD);
+          this.encounterCooldown = 4;
+          this.battle = null;
+        }
+      });
+      this.sm.set(STATE.BATTLE);
+    }
+    _onBattleWin(enemy) {
+      if (enemy.id === "galdis2") {
+        this.player.flags.galdisDefeated = true;
+        this.battle = null;
+        this._startEnding();
+        return;
+      }
+      this.battle = null;
+      this.sm.set(STATE.FIELD);
+      this.encounterCooldown = 3;
+    }
+    _onBattleLose() {
+      this.battle = null;
+      this.sm.set(STATE.GAMEOVER);
+    }
+    // 竜王城内のGタイルに踏み込むとボス戦
+    _checkBossTrigger() {
+      const p = this.player.pos;
+      if (p.map === "darkCastle" && tileAt(p.map, p.x, p.y) === "G") {
+        if (!this.player.flags.galdisDefeated) {
+          this.sm.set(STATE.EVENT);
+          this.msg.show(["竜王ガルディスが\n たちふさがった！"], () => this._beginBattle("galdis1", true));
+        }
+      }
+    }
+    // ===== ゲームオーバー =====
+    reviveAfterGameOver() {
+      const p = this.player;
+      p.gold = Math.floor(p.gold / 2);
+      p.hp = p.maxHp;
+      p.mp = p.maxMp;
+      p.pos = { map: "castle", x: 6, y: 11, dir: "up" };
+      this.sm.set(STATE.EVENT);
+      this.msg.show([STR.priest.revive(p.name)], () => this.sm.set(STATE.FIELD));
+    }
+    // ===== エンディング =====
+    _startEnding() {
+      this.sm.set(STATE.ENDING);
+      this.endingPage = 0;
+      this.endingTimer = 0;
+      this.endingMsgs = [
+        STR.common.ending1,
+        STR.common.ending2(this.player.name),
+        STR.common.ending3,
+        STR.common.endingThanks
+      ];
+    }
+    // ============ UPDATE ============
+    update(dt, frame) {
+      this.frame = frame;
+      const buttons = this.input.consume();
+      const pointer = this.input.pointer;
+      const stateBefore = this.sm.state;
+      const msgBefore = this.msg.active;
+      this.msg.update();
+      switch (this.sm.state) {
+        case STATE.TITLE:
+          this._updateTitle(buttons, pointer);
+          break;
+        case STATE.NAME:
+          this._updateName(buttons);
+          break;
+        case STATE.FIELD:
+          this._updateField(buttons, pointer);
+          break;
+        case STATE.EVENT:
+          this._updateEvent(buttons, pointer);
+          break;
+        case STATE.MENU:
+          this._updateMenu(buttons, pointer);
+          break;
+        case STATE.SHOP:
+          this._updateShop(buttons, pointer);
+          break;
+        case STATE.BATTLE:
+          this._updateBattle(buttons, pointer);
+          break;
+        case STATE.GAMEOVER:
+          this._updateGameOver(buttons, pointer);
+          break;
+        case STATE.ENDING:
+          this._updateEnding(buttons, pointer);
+          break;
+      }
+      if (this.sm.state !== stateBefore || this.msg.active !== msgBefore) {
+        this.input.flush();
+      }
+      if (this.flashFx > 0) this.flashFx--;
+      this._updateBGM();
+      this.input.endFrame();
+    }
+    _updateBGM() {
+      let track = null;
+      switch (this.sm.state) {
+        case STATE.TITLE:
+        case STATE.NAME:
+          track = "title";
+          break;
+        case STATE.ENDING:
+          track = "ending";
+          break;
+        case STATE.GAMEOVER:
+          track = null;
+          break;
+        case STATE.BATTLE:
+          track = this.battle && this.battle.isBoss ? "boss" : "battle";
+          break;
+        default: {
+          const map = this.player && this.player.pos ? getMap(this.player.pos.map) : null;
+          track = map && map.music ? map.music : "field";
+          break;
+        }
+      }
+      if (track === null) {
+        BGM.stop();
+        return;
+      }
+      BGM.play(track);
+    }
+    _updateTitle(buttons, pointer) {
+      const options = 2;
+      if (buttons.includes("up")) this.titleIndex = (this.titleIndex - 1 + options) % options;
+      if (buttons.includes("down")) this.titleIndex = (this.titleIndex + 1) % options;
+      if (buttons.includes("confirm") || pointer) {
+        if (pointer) {
+          this.titleIndex = pointer.y < this.H * 0.74 ? 0 : 1;
+        }
+        if (this.titleIndex === 0) this.startNewGame();
+        else this.continueGame();
+      }
+    }
+    _updateName(buttons) {
+      if (buttons.includes("confirm")) {
+        this.finishNaming(this.nameInput || "ユウシャ");
+      }
+    }
+    _updateField(buttons, pointer) {
+      if (this.msg.active) {
+        this._updateEvent(buttons, pointer);
+        return;
+      }
+      if (buttons.includes("menu")) {
+        this.menu.show();
+        this.sm.set(STATE.MENU);
+        return;
+      }
+      if (buttons.includes("confirm")) {
+        this.tryTalk();
+        return;
+      }
+      if (this.move) {
+        this.move.progress += 1 / MOVE_FRAMES;
+        if (this.move.progress >= 1) {
+          this.finishMove();
+          this._checkBossTrigger();
+        }
+        return;
+      }
+      let dir = null;
+      if (this.input.isHeld("up")) dir = "up";
+      else if (this.input.isHeld("down")) dir = "down";
+      else if (this.input.isHeld("left")) dir = "left";
+      else if (this.input.isHeld("right")) dir = "right";
+      if (!dir && pointer) {
+        const dxs = pointer.x - this.W / 2, dys = pointer.y - this.H / 2;
+        if (Math.abs(dxs) > Math.abs(dys)) dir = dxs > 0 ? "right" : "left";
+        else dir = dys > 0 ? "down" : "up";
+      }
+      if (dir) this.tryMove(dir);
+    }
+    _updateEvent(buttons, pointer) {
+      if (this.msg.active) {
+        if (this.msg.choices) {
+          if (buttons.includes("up")) this.msg.moveChoice("up");
+          if (buttons.includes("down")) this.msg.moveChoice("down");
+          if (buttons.includes("confirm")) this.msg.advance();
+        } else {
+          if (buttons.includes("confirm") || buttons.includes("cancel") || pointer) this.msg.advance();
+        }
+        return;
+      }
+      if (this.sm.state === STATE.EVENT) this.sm.set(STATE.FIELD);
+    }
+    _updateMenu(buttons, pointer) {
+      if (this.msg.active) {
+        this._updateEvent(buttons, pointer);
+        return;
+      }
+      if (!this.menu.open) {
+        this.sm.set(STATE.FIELD);
+        return;
+      }
+      this.menu.handleInput(buttons, pointer);
+      if (!this.menu.open && !this.msg.active) this.sm.set(STATE.FIELD);
+    }
+    _updateShop(buttons, pointer) {
+      if (!this.shop) {
+        this.sm.set(STATE.FIELD);
+        return;
+      }
+      this.shop.update();
+      if (this.msg.active) {
+        this._updateEvent(buttons, pointer);
+        return;
+      }
+      this.shop.handleInput(buttons, pointer);
+      if (!this.shop.open) {
+        this.shop = null;
+        this.sm.set(STATE.FIELD);
+      }
+    }
+    _updateBattle(buttons, pointer) {
+      if (!this.battle) {
+        this.sm.set(STATE.FIELD);
+        return;
+      }
+      this.battle.update();
+      this.battle.handleInput(buttons, pointer);
+      if (this.battle && this.battle.phase === "done") {
+      }
+    }
+    _updateGameOver(buttons, pointer) {
+      if (buttons.includes("confirm") || pointer) {
+        this.reviveAfterGameOver();
+      }
+    }
+    _updateEnding(buttons, pointer) {
+      this.endingTimer++;
+      if ((buttons.includes("confirm") || pointer) && this.endingTimer > 20) {
+        this.endingPage++;
+        this.endingTimer = 0;
+        if (this.endingPage >= this.endingMsgs.length) {
+          this.sm.set(STATE.TITLE);
+          this.titleIndex = 0;
+        }
+      }
+    }
+    // ============ RENDER ============
+    render() {
+      const ctx = this.ctx, W = this.W, H = this.H;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      switch (this.sm.state) {
+        case STATE.TITLE:
+          this._renderTitle();
+          break;
+        case STATE.NAME:
+          this._renderName();
+          break;
+        case STATE.GAMEOVER:
+          this._renderGameOver();
+          break;
+        case STATE.ENDING:
+          this._renderEnding();
+          break;
+        case STATE.BATTLE:
+          if (this.battle) this.battle.draw(ctx, W, H);
+          break;
+        default:
+          this._renderWorld();
+          break;
+      }
+      if (this.flashFx > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${this.flashFx / 24})`;
+        ctx.fillRect(0, 0, W, H);
+      }
+    }
+    _renderWorld() {
+      const ctx = this.ctx, W = this.W, H = this.H;
+      const p = this.player.pos;
+      let drawX = p.x, drawY = p.y;
+      if (this.move) {
+        drawX = this.move.fromX + (this.move.toX - this.move.fromX) * this.move.progress;
+        drawY = this.move.fromY + (this.move.toY - this.move.fromY) * this.move.progress;
+      }
+      const { camX, camY } = computeCamera(p.map, drawX, drawY, W, H);
+      renderMap(ctx, p.map, camX, camY, W, H, this.player, this.frame);
+      const px = drawX * TILE - camX, py = drawY * TILE - camY;
+      drawSprite(ctx, "hero", p.dir, px, py, TILE);
+      this._drawFieldHud();
+      if (this.sm.state === STATE.MENU) this.menu.draw(ctx, W, H);
+      if (this.sm.state === STATE.SHOP && this.shop) this.shop.draw(ctx, W, H);
+      this.msg.draw(ctx, W, H);
+    }
+    _drawFieldHud() {
+      if (this.sm.state === STATE.SHOP) return;
+      const ctx = this.ctx, p = this.player;
+      const x = 10, y = 10, w = 150, h = 70;
+      drawWindow(ctx, x, y, w, h);
+      ctx.fillStyle = "#fff";
+      ctx.font = '14px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(`${p.name}  Lv${p.lv}`, x + 10, y + 8);
+      ctx.fillStyle = hpColor(p.hp, p.maxHp);
+      ctx.fillText(`HP ${p.hp}/${p.maxHp}`, x + 10, y + 27);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(`MP ${p.mp}/${p.maxMp}  ${p.gold}G`, x + 10, y + 46);
+    }
+    _renderTitle() {
+      const ctx = this.ctx, W = this.W, H = this.H;
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "#0a0a2a");
+      g.addColorStop(1, "#1a0a1a");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#fff";
+      for (let i = 0; i < 40; i++) {
+        const sx = i * 97 % W, sy = i * 53 % (H / 2);
+        const tw = (Math.sin(this.frame / 20 + i) + 1) / 2;
+        ctx.globalAlpha = 0.3 + tw * 0.7;
+        ctx.fillRect(sx, sy, 2, 2);
+      }
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#400";
+      ctx.beginPath();
+      ctx.ellipse(W / 2, H * 0.36, 90, 60, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#a00";
+      ctx.fillRect(W / 2 - 30, H * 0.32, 8, 8);
+      ctx.fillRect(W / 2 + 22, H * 0.32, 8, 8);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#e0d040";
+      ctx.font = 'bold 52px "MS Gothic", serif';
+      ctx.fillText(STR.gameTitle, W / 2, H * 0.5);
+      ctx.fillStyle = "#fff";
+      ctx.font = '22px "MS Gothic", serif';
+      ctx.fillText(STR.gameSubtitle, W / 2, H * 0.6);
+      const hasSave = SaveManager.hasSave();
+      ctx.font = '24px "MS Gothic", monospace';
+      const items = [STR.title.newGame, STR.title.continue];
+      items.forEach((it, i) => {
+        const oy = H * 0.72 + i * 40;
+        if (i === this.titleIndex) ctx.fillStyle = "#e0d040";
+        else if (i === 1 && !hasSave) ctx.fillStyle = "#666";
+        else ctx.fillStyle = "#fff";
+        ctx.fillText((i === this.titleIndex ? "▶ " : "") + it, W / 2, oy);
+      });
+      ctx.fillStyle = "#88a";
+      ctx.font = '14px "MS Gothic", monospace';
+      if (Math.floor(this.frame / 30) % 2 === 0) ctx.fillText(STR.title.pressStart, W / 2, H * 0.9);
+      ctx.fillStyle = "#6a6a88";
+      ctx.font = '13px "MS Gothic", monospace';
+      ctx.fillText(STR.title.fileHelp, W / 2, H * 0.96);
+      ctx.textAlign = "left";
+    }
+    _renderName() {
+      const ctx = this.ctx, W = this.W, H = this.H;
+      ctx.fillStyle = "#101028";
+      ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#fff";
+      ctx.font = '24px "MS Gothic", monospace';
+      ctx.fillText(STR.title.askName, W / 2, H * 0.35);
+      const boxW = 320, boxH = 60, boxX = W / 2 - boxW / 2, boxY = Math.round(H * 0.45);
+      drawWindow(ctx, boxX, boxY, boxW, boxH);
+      const shown = (this.nameInput || "ユウシャ") + (Math.floor(performance.now() / 400) % 2 ? "｜" : "");
+      ctx.fillStyle = "#e0d040";
+      let fs = 28;
+      ctx.font = `${fs}px "MS Gothic", monospace`;
+      while (ctx.measureText(shown).width > boxW - 32 && fs > 14) {
+        fs -= 2;
+        ctx.font = `${fs}px "MS Gothic", monospace`;
+      }
+      const prevBaseline = ctx.textBaseline;
+      ctx.textBaseline = "middle";
+      ctx.fillText(shown, W / 2, boxY + boxH / 2 + 1);
+      ctx.textBaseline = prevBaseline;
+      ctx.fillStyle = "#88a";
+      ctx.font = '15px "MS Gothic", monospace';
+      ctx.fillText("なまえを にゅうりょくして Enter（くうらんで ユウシャ）", W / 2, boxY + boxH + 34);
+      ctx.textAlign = "left";
+    }
+    _renderGameOver() {
+      const ctx = this.ctx, W = this.W, H = this.H;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#a00";
+      ctx.font = 'bold 48px "MS Gothic", serif';
+      ctx.fillText(STR.common.gameOver, W / 2, H * 0.42);
+      ctx.fillStyle = "#fff";
+      ctx.font = '18px "MS Gothic", monospace';
+      if (Math.floor(this.frame / 30) % 2 === 0)
+        ctx.fillText("クリックか Enterで 城へ もどる", W / 2, H * 0.6);
+      ctx.textAlign = "left";
+    }
+    _renderEnding() {
+      const ctx = this.ctx, W = this.W, H = this.H;
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "#fdf3c0");
+      g.addColorStop(1, "#f0a060");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = "center";
+      drawSprite(ctx, "hero", "down", W / 2 - 50, H * 0.3, 48);
+      drawSprite(ctx, "princess", "down", W / 2 + 4, H * 0.3, 48);
+      drawWindow(ctx, 40, H - 160, W - 80, 130);
+      ctx.fillStyle = "#fff";
+      ctx.font = '22px "MS Gothic", monospace';
+      ctx.textAlign = "left";
+      const msg = this.endingMsgs[Math.min(this.endingPage, this.endingMsgs.length - 1)];
+      const lines = msg.split("\n");
+      lines.forEach((l, i) => ctx.fillText(l, 64, H - 140 + i * 28));
+      if (Math.floor(this.frame / 30) % 2 === 0) {
+        ctx.fillStyle = "#e0d040";
+        ctx.fillText("▼", W - 70, H - 60);
+      }
+      ctx.textAlign = "left";
+    }
+  };
+
+  // src/main.js
+  window.addEventListener("DOMContentLoaded", async () => {
+    const canvas = document.getElementById("game");
+    await AssetManager.preload();
+    const game = new Game(canvas);
+    window.addEventListener("keydown", (e) => {
+      if (game.sm.state !== STATE.NAME) return;
+      if (e.key === "Backspace") {
+        game.nameInput = game.nameInput.slice(0, -1);
+        e.preventDefault();
+      } else if (e.key === "Enter") {
+      } else if (e.key.length === 1 && game.nameInput.length < 6 && !["z", "x"].includes(e.key)) {
+        game.nameInput += e.key;
+      }
+    });
+    window.addEventListener("keydown", (e) => {
+      if (game.sm.state !== STATE.TITLE) return;
+      if (e.code === "KeyE") {
+        e.preventDefault();
+        game.exportSave();
+      } else if (e.code === "KeyI") {
+        e.preventDefault();
+        game.importSave();
+      }
+    });
+    const engine = new Engine(
+      (dt, frame) => game.update(dt, frame),
+      () => game.render()
+    );
+    engine.start();
+    window.__game = game;
+  });
+})();
+
+  </script>
+</body>
+</html>
